@@ -15,3 +15,10 @@ cross build --target armv7-unknown-linux-gnueabihf --release
 ```shell
 cross build --target x86_64-pc-windows-msvc --release
 ```
+
+## Test
+
+Run application and then in the terminal 
+```shell
+curl -F "file=@C:\Projects\rust\logfile-processor\backend\data\logfile1.txt" http://localhost:8080/upload
+```
