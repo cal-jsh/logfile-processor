@@ -1,19 +1,24 @@
-use axum::{routing::post, Json, Router, extract::Json as AxumJson};
+// local
 use crate::model::filter::FilterRequest;
+use crate::model::filter::FilteredLogResponse;
 use crate::parsing::parser::parse_log;
-use crate::model::log_summary::LogSummary;
+// axum
+use axum::{routing::post, Json, Router, extract::Json as AxumJson};
 
 pub fn router() -> Router {
     Router::new().route("/filter", post(filter_handler))
 }
 
-#[derive(serde::Serialize)]
-struct FilteredLogResponse {
-    filtered_lines: Vec<String>,
-    summary: LogSummary,
-}
-
-async fn filter_handler(AxumJson(req): AxumJson<FilterRequest>) -> Json<FilteredLogResponse> {
+/// Filter log lines and produce a summary
+#[utoipa::path(
+    post,
+    path = "/filter",
+    request_body = FilterRequest,
+    responses(
+        (status = 200, description = "Filtered log lines with summary", body = FilteredLogResponse)
+    )
+)]
+pub async fn filter_handler(AxumJson(req): AxumJson<FilterRequest>) -> Json<FilteredLogResponse> {
     let summary = parse_log(&req.log_text, req.domains.as_ref(), req.levels.as_ref());
 
     // Also collect the filtered lines

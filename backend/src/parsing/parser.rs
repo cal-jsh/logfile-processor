@@ -1,7 +1,11 @@
+// local
 use crate::model::log_summary::LogSummary;
-use regex::Regex;
-use std::collections::{HashMap, HashSet};
+// once_cell
 use once_cell::sync::Lazy;
+// regex
+use regex::Regex;
+// std
+use std::collections::{HashMap, HashSet};
 
 pub static LOG_REGEX: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"^\[(?P<ts>[^\]]+)\]\s\[(?P<level>[^\]]+)\]\s\[(?P<domain>[^\]]+)\]").unwrap()
