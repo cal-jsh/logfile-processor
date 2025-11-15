@@ -1,0 +1,17 @@
+# Logfile Processor
+
+## Build
+
+```shell
+cargo install cross
+```
+
+### Raspberry Pi
+```shell
+cross build --target armv7-unknown-linux-gnueabihf --release
+```
+
+### Windows 11
+```shell
+cross build --target x86_64-pc-windows-msvc --release
+```
