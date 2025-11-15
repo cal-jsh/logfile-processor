@@ -16,7 +16,7 @@ use utoipa::OpenApi;
         schemas(LogSummary, FilterRequest, FilteredLogResponse)
     ),
     info(
-        title = "LogFile Processor API",
+        title = "Logfile Processor API",
         version = "1.0"
     )
 )]
