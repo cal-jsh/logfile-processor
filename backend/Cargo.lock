@@ -265,6 +265,7 @@ name = "logfile_processor"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "once_cell",
  "regex",
  "serde",
  "serde_json",
