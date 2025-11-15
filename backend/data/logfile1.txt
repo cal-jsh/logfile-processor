@@ -1,0 +1,21 @@
+[2025-01-01T08:00:01.123Z] [INFO] [System] Application starting
+[2025-01-01T08:00:01.456Z] [DEBUG] [Config] Loaded configuration file '/etc/app/config.toml'
+[2025-01-01T08:00:02.010Z] [INFO] [Network] Connecting to server at 10.0.0.5
+[2025-01-01T08:00:02.512Z] [WARN] [Network] Connection slow, retrying...
+[2025-01-01T08:00:03.115Z] [INFO] [Network] Connection established
+[2025-01-01T08:00:03.520Z] [DEBUG] [Auth] Sending authentication request
+[2025-01-01T08:00:03.980Z] [INFO] [Auth] User 'admin' authenticated successfully
+[2025-01-01T08:00:04.115Z] [INFO] [SensorModule] Initializing sensors
+[2025-01-01T08:00:04.515Z] [DEBUG] [SensorModule] Sensor A: OK
+[2025-01-01T08:00:04.516Z] [DEBUG] [SensorModule] Sensor B: OK
+[2025-01-01T08:00:04.517Z] [DEBUG] [SensorModule] Sensor C: OK
+[2025-01-01T08:00:05.010Z] [INFO] [SensorModule] All sensors initialized
+[2025-01-01T08:00:06.001Z] [WARN] [System] High memory usage detected
+[2025-01-01T08:00:06.550Z] [ERROR] [SensorModule] Failed to read sensor B (I/O timeout)
+[2025-01-01T08:00:07.120Z] [INFO] [Recovery] Restarting sensor interface
+[2025-01-01T08:00:08.050Z] [INFO] [Recovery] Sensor interface restarted successfully
+[2025-01-01T08:00:08.320Z] [DEBUG] [Network] Heartbeat ping
+[2025-01-01T08:00:09.450Z] [INFO] [System] Application running normally
+[2025-01-01T08:00:10.520Z] [DEBUG] [Network] Heartbeat ping
+[2025-01-01T08:00:11.670Z] [INFO] [System] Shutdown requested by user
+[2025-01-01T08:00:12.000Z] [INFO] [System] Application stopped
