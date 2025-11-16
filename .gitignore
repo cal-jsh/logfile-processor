@@ -1,2 +1,4 @@
 /backend/.vscode
 /backend/target
+/frontend/node_modules
+/frontend/.vscode
