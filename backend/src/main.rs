@@ -24,6 +24,7 @@ async fn main() {
     let app = Router::new()
     .merge(api::upload::router())
     .merge(api::filter::router())
+    .merge(api::stream_filtered_logs::router())
     .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
     .layer(cors);
 
