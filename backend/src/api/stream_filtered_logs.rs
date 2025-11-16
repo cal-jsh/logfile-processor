@@ -5,7 +5,7 @@ use crate::parsing::parser::LOG_REGEX;
 // axum
 use axum::{
     extract::Json,
-    response::sse::{Sse, Event},
+    response::sse::{Event, Sse},
     routing::post,
     Router,
 };
@@ -22,10 +22,17 @@ pub fn router() -> Router {
     path = "/stream_logs",
     request_body = FilterRequest,
     responses(
-        (status = 200, description = "Stream of filtered log lines", content_type = "text/event-stream")
+        (
+            status = 200,
+            description = "Stream of filtered log lines as Server-Sent Events (SSE). \
+                           Each SSE event contains a single log line as plain text.",
+            content_type = "text/event-stream"
+        )
     )
 )]
-pub async fn stream_filtered_logs(Json(req): Json<FilterRequest>) -> Sse<BoxStream<'static, Result<Event, Infallible>>> {
+pub async fn stream_filtered_logs(
+    Json(req): Json<FilterRequest>,
+) -> Sse<BoxStream<'static, Result<Event, Infallible>>> {
     // Move the log text into a Vec<String> once — necessary for 'static lifetime
     let log_lines: Vec<String> = req.log_text.lines().map(|l| l.to_string()).collect();
 
@@ -42,8 +49,12 @@ pub async fn stream_filtered_logs(Json(req): Json<FilterRequest>) -> Sse<BoxStre
                 if let Some(caps) = LOG_REGEX.captures(&line) {
                     let level = &caps["level"];
                     let domain = &caps["domain"];
-                    if filter_levels.as_ref().map_or(true, |l| l.contains(&level.to_string()))
-                        && filter_domains.as_ref().map_or(true, |d| d.contains(&domain.to_string()))
+                    if filter_levels
+                        .as_ref()
+                        .map_or(true, |l| l.contains(&level.to_string()))
+                        && filter_domains
+                            .as_ref()
+                            .map_or(true, |d| d.contains(&domain.to_string()))
                     {
                         return Some(Ok(Event::default().data(line)));
                     }
