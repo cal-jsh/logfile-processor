@@ -2,6 +2,7 @@ mod api;
 mod api_doc;
 mod parsing;
 mod model;
+mod log_storage;
 
 use axum::{Router};
 use tower_http::cors::{Any, CorsLayer};
@@ -24,6 +25,7 @@ async fn main() {
     let app = Router::new()
     .merge(api::upload::router())
     .merge(api::filter::router())
+    .merge(api::stream_filtered_logs::router())
     .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
     .layer(cors);
 

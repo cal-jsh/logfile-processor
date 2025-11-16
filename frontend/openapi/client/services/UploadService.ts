@@ -2,7 +2,7 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
-import type { LogSummary } from '../models/LogSummary';
+import type { UploadResponse } from '../models/UploadResponse';
 
 import type { CancelablePromise } from '../core/CancelablePromise';
 import { OpenAPI } from '../core/OpenAPI';
@@ -12,10 +12,10 @@ export class UploadService {
 
     /**
      * Upload and parse a log file
-     * @returns LogSummary Parsed log summary
+     * @returns UploadResponse Upload response with session id and log summary
      * @throws ApiError
      */
-    public static uploadHandler(): CancelablePromise<LogSummary> {
+    public static uploadHandler(): CancelablePromise<UploadResponse> {
         return __request(OpenAPI, {
             method: 'POST',
             url: '/upload',
