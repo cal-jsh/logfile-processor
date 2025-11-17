@@ -60,7 +60,7 @@ export const LogViewer: React.FC<LogViewerProps> = ({ url, maxLines = 2000 }) =>
     }, [url, maxLines]);
 
     return (
-        <div style={{ height: 400 }}>
+        <div style={{ height: 750, border: "1px solid #ccc", borderRadius: 4, overflow: "hidden" }}>
             {linesRef.current.length === 0 ? (
                 <div
                     style={{
