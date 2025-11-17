@@ -10,7 +10,8 @@ export type { OpenAPIConfig } from './core/OpenAPI';
 export type { FilteredLogResponse } from './models/FilteredLogResponse';
 export type { FilterRequest } from './models/FilterRequest';
 export type { LogSummary } from './models/LogSummary';
+export type { UploadFileBody } from './models/UploadFileBody';
 export type { UploadResponse } from './models/UploadResponse';
 
 export { FilterService } from './services/FilterService';
-export { UploadService } from './services/UploadService';
+export { LogUploadService } from './services/LogUploadService';

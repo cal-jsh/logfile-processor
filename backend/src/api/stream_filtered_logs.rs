@@ -10,9 +10,12 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+// tokio
+use tokio::fs::File;
+// tokio-util
+use tokio_util::codec::{FramedRead, LinesCodec};
 // futures
 use futures::{stream, StreamExt};
-use futures::stream::BoxStream;
 // serde
 use serde::Deserialize;
 // tracing
@@ -59,31 +62,21 @@ pub struct LogFilterQuery {
 pub async fn stream_filtered_logs(
     Query(query): Query<LogFilterQuery>,
 ) -> Sse<Pin<Box<dyn futures::Stream<Item = Result<Event, Infallible>> + Send>>> {
-    // get owned log text
-    let log_text = match get_user_log(&query.session_id) {
-        Some(text) => text,
+    let file_path = match get_user_log(&query.session_id) {
+        Some(path) => path,
         None => return Sse::new(stream::empty().boxed()),
     };
 
-    // own filters as Vec<String>
-    let filter_levels: Option<Vec<String>> = query
-        .levels
-        .as_ref()
-        .map(|s| s.split(',').map(|x| x.trim().to_string()).collect());
+    let file = match File::open(file_path).await {
+        Ok(f) => f,
+        Err(_) => return Sse::new(stream::empty().boxed()),
+    };
 
-    let filter_domains: Option<Vec<String>> = query
-        .domains
-        .as_ref()
-        .map(|s| s.split(',').map(|x| x.trim().to_string()).collect());
-
-    // own lines so nothing borrows the handler stack
-    let lines: Vec<String> = log_text.lines().map(|l| l.to_string()).collect();
-
-    // stream: produce Option<Event> from each line, then map to Result<Event, Infallible>
-    let boxed_stream: BoxStream<'static, Result<Event, Infallible>> = stream::iter(lines)
+    let boxed_stream = FramedRead::new(file, LinesCodec::new())
+        .map(|line_res| line_res.unwrap_or_default()) // handle read errors
         .filter_map(move |line| {
-            let filter_levels = filter_levels.clone();
-            let filter_domains = filter_domains.clone();
+            let filter_levels = query.levels.clone().map(|s| s.split(',').map(|x| x.trim().to_string()).collect::<Vec<_>>());
+            let filter_domains = query.domains.clone().map(|s| s.split(',').map(|x| x.trim().to_string()).collect::<Vec<_>>());
 
             async move {
                 if let Some(caps) = LOG_REGEX.captures(&line) {
@@ -94,14 +87,12 @@ pub async fn stream_filtered_logs(
                     let domain_ok = filter_domains.as_ref().map_or(true, |v| v.contains(&domain));
 
                     if level_ok && domain_ok {
-                        // return Event (not wrapped)
                         return Some(Event::default().data(line));
                     }
                 }
                 None
             }
         })
-        // convert Option<Event> -> Result<Event, Infallible>
         .map(|ev| Ok(ev))
         .boxed();
 
