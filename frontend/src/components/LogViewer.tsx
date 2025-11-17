@@ -1,71 +1,88 @@
 import { useEffect, useRef, useState } from "react";
+import { Virtuoso } from "react-virtuoso";
 
 interface LogViewerProps {
-    url: string;           // SSE URL with session_id & optional filters
-    maxLines?: number;     // maximum lines to keep in state
+    url: string;
+    maxLines?: number;
 }
 
 export const LogViewer: React.FC<LogViewerProps> = ({ url, maxLines = 2000 }) => {
-    const [lines, setLines] = useState<string[]>([]);
-    const evtSourceRef = useRef<EventSource | null>(null);
-    const containerRef = useRef<HTMLDivElement | null>(null);
+    const linesRef = useRef<string[]>([]);          // Persistent log storage
+    const bufferRef = useRef<string[]>([]);         // Incoming messages buffer
+    const evtRef = useRef<EventSource | null>(null);
+    const prevUrlRef = useRef<string | null>(null);
+    const [, forceRender] = useState(0);           // Force Virtuoso re-render
 
-    // Connect SSE whenever url changes
+    // Clear logs when URL changes (filter change)
     useEffect(() => {
-        setLines([]); // clear previous log lines
+        if (prevUrlRef.current !== url) {
+            linesRef.current = [];
+            bufferRef.current = [];
+            prevUrlRef.current = url;
+            forceRender(r => r + 1); // trigger re-render
+        }
+    }, [url]);
 
-        const evtSource = new EventSource(url);
-        evtSourceRef.current = evtSource;
+    // SSE + buffer + flush interval
+    useEffect(() => {
+        const es = new EventSource(url);
+        evtRef.current = es;
 
-        evtSource.onmessage = (event) => {
-            setLines((prev) => {
-                const newLines = [...prev, event.data];
-                if (newLines.length > maxLines) {
-                    newLines.splice(0, newLines.length - maxLines);
-                }
-                return newLines;
-            });
+        es.onmessage = (event) => {
+            bufferRef.current.push(event.data);
         };
 
-        evtSource.onerror = (err) => {
+        const flushInterval = setInterval(() => {
+            if (bufferRef.current.length === 0) return;
+
+            // Append buffered messages to the persistent ref
+            linesRef.current = [...linesRef.current, ...bufferRef.current];
+            bufferRef.current = [];
+
+            // Trim to maxLines
+            if (linesRef.current.length > maxLines) {
+                linesRef.current = linesRef.current.slice(linesRef.current.length - maxLines);
+            }
+
+            // Trigger re-render for Virtuoso
+            forceRender(r => r + 1);
+        }, 100); // flush 10x/sec
+
+        es.onerror = (err) => {
             console.error("SSE error:", err);
-            evtSource.close();
+            es.close();
         };
 
         return () => {
-            evtSource.close();
+            es.close();
+            clearInterval(flushInterval);
         };
     }, [url, maxLines]);
 
-    // Auto-scroll to bottom when new lines arrive
-    useEffect(() => {
-        if (containerRef.current) {
-            containerRef.current.scrollTop = containerRef.current.scrollHeight;
-        }
-    }, [lines]);
-
     return (
-        <div
-            ref={containerRef}
-            style={{
-                height: "400px",
-                overflowY: "auto",
-                backgroundColor: "#1e1e1e",
-                color: "#ffffff",
-                padding: "10px",
-                fontFamily: "monospace",
-                borderRadius: "6px",
-                whiteSpace: "pre",
-            }}
-        >
-            {lines.length === 0 ? (
-                <p>No logs yet.</p>
+        <div style={{ height: 400 }}>
+            {linesRef.current.length === 0 ? (
+                <div
+                    style={{
+                        padding: 10,
+                        background: "#1e1e1e",
+                        color: "#fff",
+                        fontFamily: "monospace"
+                    }}
+                >
+                    No logs yet.
+                </div>
             ) : (
-                lines.map((line, idx) => (
-                    <div key={idx}>
-                        <span style={{ color: "#888" }}>{idx + 1}</span>: {line}
-                    </div>
-                ))
+                <Virtuoso
+                    style={{ height: "100%", background: "#1e1e1e", color: "white" }}
+                    data={linesRef.current}
+                    followOutput="smooth"
+                    itemContent={(index, line) => (
+                        <div style={{ fontFamily: "monospace", paddingLeft: 10 }}>
+                            <span style={{ color: "#888" }}>{index + 1}</span>: {line}
+                        </div>
+                    )}
+                />
             )}
         </div>
     );

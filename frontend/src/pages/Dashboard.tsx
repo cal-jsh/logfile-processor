@@ -22,25 +22,24 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl }) => {
     }, [levels, domains]);
 
     // SSE URL
-    const logUrl = `${baseUrl}/stream_logs?session_id=${sessionId}${
-        debouncedLevels ? `&levels=${encodeURIComponent(debouncedLevels)}` : ""
-    }${debouncedDomains ? `&domains=${encodeURIComponent(debouncedDomains)}` : ""}`;
+    const logUrl = `${baseUrl}/stream_logs?session_id=${sessionId}${debouncedLevels ? `&levels=${encodeURIComponent(debouncedLevels)}` : ""
+        }${debouncedDomains ? `&domains=${encodeURIComponent(debouncedDomains)}` : ""}`;
 
-useEffect(() => {
-    const cleanupSession = () => {
-        const url = `${baseUrl}/close_session?session_id=${encodeURIComponent(sessionId)}`;
-        navigator.sendBeacon(url); // reliable during unload
-    };
+    useEffect(() => {
+        const cleanupSession = () => {
+            const url = `${baseUrl}/close_session?session_id=${encodeURIComponent(sessionId)}`;
+            navigator.sendBeacon(url); // reliable during unload
+        };
 
-    window.addEventListener("beforeunload", cleanupSession);
-    window.addEventListener("unload", cleanupSession);
+        window.addEventListener("beforeunload", cleanupSession);
+        window.addEventListener("unload", cleanupSession);
 
-    // Only cleanup the event listeners on unmount, do NOT call cleanupSession()
-    return () => {
-        window.removeEventListener("beforeunload", cleanupSession);
-        window.removeEventListener("unload", cleanupSession);
-    };
-}, [sessionId, baseUrl]);
+        // Only cleanup the event listeners on unmount, do NOT call cleanupSession()
+        return () => {
+            window.removeEventListener("beforeunload", cleanupSession);
+            window.removeEventListener("unload", cleanupSession);
+        };
+    }, [sessionId, baseUrl]);
 
     return (
         <div style={{ padding: "20px" }}>
@@ -69,7 +68,7 @@ useEffect(() => {
             </div>
 
             {/* LogViewer streaming logs from backend */}
-            <LogViewer url={logUrl} maxLines={2000} />
+            <LogViewer url={logUrl} maxLines={100000} />
         </div>
     );
 };
