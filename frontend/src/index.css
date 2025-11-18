@@ -1,5 +1,10 @@
+/* third-party css imports must come before other rules per PostCSS (@import first) */
 @import "tailwindcss";
 @import "tw-animate-css";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
 @custom-variant dark (&:is(.dark *));
 

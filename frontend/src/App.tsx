@@ -60,7 +60,7 @@ export default function App() {
     }
 
     return (
-        <div className="flex w-full max-w-md flex-col gap-6"
+        <div className="flex flex-col gap-6"
             style={{
                 height: "100vh",
                 display: "flex",
