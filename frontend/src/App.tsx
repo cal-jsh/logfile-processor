@@ -39,11 +39,12 @@ export default function App() {
     };
 
     if (showDashboard && summary && sessionId) {
-        // Pass session_id to Dashboard so it can connect to SSE
+        // Pass session_id and summary to Dashboard so it can initialize filters and connect to SSE
         return (
             <Dashboard
                 sessionId={sessionId}
                 baseUrl="http://localhost:8080"
+                summary={summary}
             />
         );
     }
