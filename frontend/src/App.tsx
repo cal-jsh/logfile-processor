@@ -26,6 +26,7 @@ export default function App() {
 
             // The backend should return { session_id, summary }
             const { session_id, summary } = response as any;
+            console.log("Upload response:", response);
 
             setSessionId(session_id);      // store session_id
             setSummary(summary);           // store log summary
@@ -38,11 +39,12 @@ export default function App() {
     };
 
     if (showDashboard && summary && sessionId) {
-        // Pass session_id to Dashboard so it can connect to SSE
+        // Pass session_id and summary to Dashboard so it can initialize filters and connect to SSE
         return (
             <Dashboard
                 sessionId={sessionId}
                 baseUrl="http://localhost:8080"
+                summary={summary}
             />
         );
     }
