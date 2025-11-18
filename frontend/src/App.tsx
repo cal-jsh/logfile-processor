@@ -26,6 +26,7 @@ export default function App() {
 
             // The backend should return { session_id, summary }
             const { session_id, summary } = response as any;
+            console.log("Upload response:", response);
 
             setSessionId(session_id);      // store session_id
             setSummary(summary);           // store log summary

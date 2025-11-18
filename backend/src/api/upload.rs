@@ -1,7 +1,6 @@
 // local
 use crate::log_storage::save_user_log;
 use crate::model::upload_response::UploadResponse;
-use crate::model::log_summary::LogSummary;
 use crate::parsing::parser::parse_log;
 // axum
 use axum::{
@@ -15,10 +14,9 @@ use uuid::Uuid;
 // utoipa
 use utoipa::ToSchema;
 // tracing
-use tracing::info;
+use tracing::{trace, debug, info, error};
 // std
 use std::path::PathBuf;
-use std::collections::HashMap;
 
 /// Build the router
 pub fn router() -> Router {
@@ -56,7 +54,7 @@ pub async fn upload_handler(mut multipart: Multipart) -> impl IntoResponse {
     // Ensure upload directory exists
     let upload_dir = PathBuf::from("./uploads");
     if let Err(e) = tokio::fs::create_dir_all(&upload_dir).await {
-        eprintln!("Failed to create upload directory: {:?}", e);
+        error!("Failed to create upload directory: {:?}", e);
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             "Failed to create upload directory",
@@ -68,25 +66,25 @@ pub async fn upload_handler(mut multipart: Multipart) -> impl IntoResponse {
     let mut uploaded = false;
 
     while let Ok(Some(mut field)) = multipart.next_field().await {
-        info!("Processing uploaded field: {:?}", field.name());
+        debug!("Processing uploaded field: {:?}", field.name());
         let mut file = match tokio::fs::File::create(&file_path).await {
             Ok(f) => f,
             Err(e) => {
-                eprintln!("Failed to create file: {:?}", e);
+                error!("Failed to create file: {:?}", e);
                 return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to create file")
                     .into_response();
             }
         };
 
         while let Ok(Some(chunk)) = field.chunk().await {
-            info!("Writing chunk of size: {}", chunk.len());
+            trace!("Writing chunk of size: {}", chunk.len());
             if let Err(e) = file.write_all(&chunk).await {
-                eprintln!("Failed writing chunk: {:?}", e);
+                error!("Failed writing chunk: {:?}", e);
                 return (StatusCode::INTERNAL_SERVER_ERROR, "Failed writing file").into_response();
             }
         }
 
-        info!("Finished writing file to {:?}", file_path);
+        debug!("Finished writing file to {:?}", file_path);
 
         uploaded = true;
         break; // only handle first file
@@ -99,26 +97,27 @@ pub async fn upload_handler(mut multipart: Multipart) -> impl IntoResponse {
     // Save session info (store path)
     save_user_log(&session_id, file_path.to_string_lossy().to_string());
 
-    // Spawn background parsing without storing summary
-    let file_path_clone = file_path.clone();
-    let session_id_clone = session_id.clone();
-    tokio::spawn(async move {
-        if let Ok(log_text) = tokio::fs::read_to_string(&file_path_clone).await {
-            let _summary = parse_log(&log_text, None, None);
-            info!("Finished parsing log for session {}", session_id_clone);
+    // Read the log file to parse it
+    let log_text = match tokio::fs::read_to_string(&file_path).await {
+        Ok(text) => text,
+        Err(e) => {
+            error!("Failed to read log file for parsing: {:?}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to read log file for parsing",
+            )
+                .into_response();
         }
-    });
-
-    // respond immediately with session ID and placeholder summary
-    let placeholder_summary = LogSummary {
-        total_lines: 0,
-        levels: HashMap::new(),
-        unique_domains: vec![],
     };
 
+    // Parse the log file to get the summary
+    let summary = parse_log(&log_text, None, None);
+    info!("Finished parsing log for session {}. Summary: {:?}", session_id, summary);
+
+    // Respond with session ID and the actual summary
     Json(UploadResponse {
         session_id,
-        summary: placeholder_summary,
+        summary,
     })
     .into_response()
 }

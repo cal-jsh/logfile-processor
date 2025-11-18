@@ -5,7 +5,7 @@ use utoipa::ToSchema;
 // std
 use std::collections::HashMap;
 
-#[derive(Serialize, ToSchema)]
+#[derive(Serialize, ToSchema, Debug)]
 pub struct LogSummary {
     /// Total number of lines in the log
     pub total_lines: usize,
