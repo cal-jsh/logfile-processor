@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Virtuoso } from "react-virtuoso";
+import { colorMap } from "../lib/colorMap";
 
 interface LogViewerProps {
     url: string;
@@ -99,16 +100,9 @@ export const LogViewer: React.FC<LogViewerProps> = ({ url, maxLines = 2000, show
                         }
 
                         // Log level coloring
+
                         const levelMatch = line.match(/\[(TRACE|DEBUG|INFO|WARN|ERROR)\]/);
                         const level = levelMatch ? levelMatch[1] : null;
-
-                        const colorMap: Record<string, string> = {
-                            TRACE: "#888",
-                            DEBUG: "#ADD8E6",
-                            INFO: "#fff",
-                            WARN: "orange",
-                            ERROR: "red"
-                        };
 
                         // Split line for display
                         let beforeLevel = line;
