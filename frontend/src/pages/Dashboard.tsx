@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { LogViewer } from "../components/LogViewer";
 import type { LogSummary } from "../../openapi/client/models/LogSummary";
+import SearchableMultiSelect from "../components/ui/searchablemultiselect";
 
 interface DashboardProps {
     sessionId: string;
@@ -9,51 +10,36 @@ interface DashboardProps {
 }
 
 export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summary }) => {
-    const [selectedLevels, setSelectedLevels] = useState<Set<string>>(new Set());
-    const [selectedDomains, setSelectedDomains] = useState<Set<string>>(new Set());
+    const [selectedLevels, setSelectedLevels] = useState<string[]>([]);
+    const [selectedDomains, setSelectedDomains] = useState<string[]>([]);
     const [debouncedLevels, setDebouncedLevels] = useState<string>("");
     const [debouncedDomains, setDebouncedDomains] = useState<string>("");
 
     const [showDelta, setShowDelta] = useState(false); // controls delta display
 
-    // Initialize selected sets from summary (all selected by default)
+    // Initialize selected arrays from summary (all selected by default)
     useEffect(() => {
         if (!summary) return;
-        setSelectedLevels(new Set(Object.keys(summary.levels || {})));
-        setSelectedDomains(new Set(summary.unique_domains || []));
+        setSelectedLevels(Object.keys(summary.levels || {}));
+        setSelectedDomains(summary.unique_domains || []);
     }, [summary]);
 
-    // Debounce changes to selected sets before updating query params
+    // Debounce changes to selected arrays before updating query params
     useEffect(() => {
         const timer = setTimeout(() => {
-            setDebouncedLevels(Array.from(selectedLevels).join(","));
-            setDebouncedDomains(Array.from(selectedDomains).join(","));
+            setDebouncedLevels(selectedLevels.join(","));
+            setDebouncedDomains(selectedDomains.join(","));
         }, 300);
         return () => clearTimeout(timer);
     }, [selectedLevels, selectedDomains]);
 
-    const toggleLevel = (level: string) => {
-        setSelectedLevels((prev) => {
-            const next = new Set(prev);
-            if (next.has(level)) next.delete(level);
-            else next.add(level);
-            return next;
-        });
-    };
+    const levelOptions = Object.keys(summary.levels || {});
+    const domainOptions = summary.unique_domains || [];
 
-    const toggleDomain = (domain: string) => {
-        setSelectedDomains((prev) => {
-            const next = new Set(prev);
-            if (next.has(domain)) next.delete(domain);
-            else next.add(domain);
-            return next;
-        });
-    };
-
-    const selectAllLevels = () => setSelectedLevels(new Set(Object.keys(summary.levels || {})));
-    const deselectAllLevels = () => setSelectedLevels(new Set());
-    const selectAllDomains = () => setSelectedDomains(new Set(summary.unique_domains || []));
-    const deselectAllDomains = () => setSelectedDomains(new Set());
+    const selectAllLevels = () => setSelectedLevels(levelOptions.slice());
+    const deselectAllLevels = () => setSelectedLevels([]);
+    const selectAllDomains = () => setSelectedDomains(domainOptions.slice());
+    const deselectAllDomains = () => setSelectedDomains([]);
 
     const levelsParam = debouncedLevels ? `&levels=${encodeURIComponent(debouncedLevels)}` : "";
     const domainsParam = debouncedDomains ? `&domains=${encodeURIComponent(debouncedDomains)}` : "";
@@ -78,57 +64,29 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
         <div style={{ padding: "20px" }}>
             <h1>Logfile Processor</h1>
 
-            {/* Filters - collapsible checkbox lists for Levels and Domains */}
-            <div style={{ marginBottom: "10px", background: "#353333ff", padding: 8, borderRadius: 4 }}>
-                <details style={{ display: "inline-block", marginRight: 16 }} open>
-                    <summary style={{ color: "#fff", cursor: "pointer" }}>
-                        Levels ({selectedLevels.size} selected)
-                    </summary>
-                    <div style={{ padding: 8, background: "#fff", color: "#000", borderRadius: 4 }}>
-                        <div style={{ marginBottom: 8 }}>
-                            <button onClick={selectAllLevels} style={{ marginRight: 8 }}>Select All</button>
-                            <button onClick={deselectAllLevels}>Deselect All</button>
-                        </div>
-                        <div style={{ maxHeight: 200, overflow: "auto" }}>
-                            {Object.keys(summary.levels || {}).map((level) => (
-                                <label key={level} style={{ display: "block", marginBottom: 4 }}>
-                                    <input
-                                        type="checkbox"
-                                        checked={selectedLevels.has(level)}
-                                        onChange={() => toggleLevel(level)}
-                                        style={{ marginRight: 8 }}
-                                    />
-                                    {level} ({(summary.levels as any)[level]})
-                                </label>
-                            ))}
+            {/* Filters - searchable multi-selects for Levels and Domains */}
+            <div style={{ marginBottom: "10px", background: "#353333ff", padding: 8, borderRadius: 4, display: 'flex', gap: 12, alignItems: 'center' }}>
+                <div>
+                    <div style={{ color: '#fff', marginBottom: 6 }}>Levels ({selectedLevels.length} selected)</div>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                        <SearchableMultiSelect options={levelOptions} selected={selectedLevels} onChange={setSelectedLevels} />
+                        <div style={{ display: 'flex', flexDirection: 'column' }}>
+                            <button onClick={selectAllLevels} style={{ marginBottom: 6 }}>All</button>
+                            <button onClick={deselectAllLevels}>None</button>
                         </div>
                     </div>
-                </details>
+                </div>
 
-                <details style={{ display: "inline-block", marginRight: 16 }} open>
-                    <summary style={{ color: "#fff", cursor: "pointer" }}>
-                        Domains ({selectedDomains.size} selected)
-                    </summary>
-                    <div style={{ padding: 8, background: "#fff", color: "#000", borderRadius: 4 }}>
-                        <div style={{ marginBottom: 8 }}>
-                            <button onClick={selectAllDomains} style={{ marginRight: 8 }}>Select All</button>
-                            <button onClick={deselectAllDomains}>Deselect All</button>
-                        </div>
-                        <div style={{ maxHeight: 200, overflow: "auto" }}>
-                            {(summary.unique_domains || []).map((domain) => (
-                                <label key={domain} style={{ display: "block", marginBottom: 4 }}>
-                                    <input
-                                        type="checkbox"
-                                        checked={selectedDomains.has(domain)}
-                                        onChange={() => toggleDomain(domain)}
-                                        style={{ marginRight: 8 }}
-                                    />
-                                    {domain}
-                                </label>
-                            ))}
+                <div>
+                    <div style={{ color: '#fff', marginBottom: 6 }}>Domains ({selectedDomains.length} selected)</div>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                        <SearchableMultiSelect options={domainOptions} selected={selectedDomains} onChange={setSelectedDomains} />
+                        <div style={{ display: 'flex', flexDirection: 'column' }}>
+                            <button onClick={selectAllDomains} style={{ marginBottom: 6 }}>All</button>
+                            <button onClick={deselectAllDomains}>None</button>
                         </div>
                     </div>
-                </details>
+                </div>
 
                 {/* Show delta checkbox */}
                 <label style={{ marginLeft: "20px", color: "#fff"}}>
