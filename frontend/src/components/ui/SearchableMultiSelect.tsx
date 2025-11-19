@@ -1,16 +1,16 @@
 import { useState, useMemo } from "react";
 import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
-import { Command, CommandInput, CommandItem, CommandList, CommandGroup, CommandEmpty } from "@/components/ui/command";
+import {
+  Command,
+  CommandInput,
+  CommandItem,
+  CommandList,
+  CommandGroup,
+  CommandEmpty,
+} from "@/components/ui/command";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
 import { ChevronsUpDown } from "lucide-react";
-
-// Example usage:
-// <SearchableMultiSelect
-//   options={["Apple", "Banana", "Mango", "Cherry"]}
-//   selected={selectedValues}
-//   onChange={setSelectedValues}
-// />
 
 export interface SearchableMultiSelectProps {
   options: string[];
@@ -18,12 +18,19 @@ export interface SearchableMultiSelectProps {
   onChange: (values: string[]) => void;
 }
 
-export default function SearchableMultiSelect({ options, selected, onChange }: SearchableMultiSelectProps) {
-  
+export default function SearchableMultiSelect({
+  options,
+  selected,
+  onChange,
+}: SearchableMultiSelectProps) {
+  // Controlled open so we can reliably toggle from the Button
+  const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
 
   const filtered = useMemo(() => {
-    return options.filter((opt) => opt.toLowerCase().includes(query.toLowerCase()));
+    return options.filter((opt) =>
+      opt.toLowerCase().includes(query.toLowerCase())
+    );
   }, [options, query]);
 
   const toggleOption = (option: string) => {
@@ -35,26 +42,29 @@ export default function SearchableMultiSelect({ options, selected, onChange }: S
   };
 
   return (
-    <Popover>
+    <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
+        {/* important: type="button" and explicit onClick toggle */}
         <Button
+          type="button"
           variant="outline"
           role="combobox"
+          aria-expanded={open}
           className="w-64 justify-between"
+          onClick={() => setOpen((v) => !v)} // <-- ensures clicking opens/closes reliably
         >
-          {selected.length > 0
-            ? `${selected.length} selected`
-            : "Select options..."}
+          {selected.length > 0 ? `${selected.length} selected` : "Select options..."}
           <ChevronsUpDown className="ml-2 h-4 w-4 opacity-50" />
         </Button>
       </PopoverTrigger>
 
-      <PopoverContent className="p-0 w-64">
+      {/* add a high z-index so it won't be hidden under other elements */}
+      <PopoverContent className="p-0 w-64 z-50">
         <Command>
           <CommandInput
             placeholder="Search..."
             value={query}
-            onValueChange={setQuery}
+            onValueChange={(val: string) => setQuery(val)}
           />
 
           <CommandList>
@@ -65,12 +75,11 @@ export default function SearchableMultiSelect({ options, selected, onChange }: S
                 <CommandItem
                   key={opt}
                   value={opt}
+                  // CommandItem's onSelect signature varies across implementations.
+                  // Using an inline handler is robust.
                   onSelect={() => toggleOption(opt)}
                 >
-                  <Checkbox
-                    checked={selected.includes(opt)}
-                    className="mr-2"
-                  />
+                  <Checkbox checked={selected.includes(opt)} className="mr-2" />
                   {opt}
                 </CommandItem>
               ))}
