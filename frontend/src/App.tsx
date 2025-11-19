@@ -4,6 +4,16 @@ import { request as __request } from "../openapi/client/core/request";
 import type { LogSummary } from "../openapi/client/models/LogSummary";
 import { Dashboard } from "./pages/Dashboard";
 
+// shadcn/ui components
+import { Input } from "@/components/ui/input"
+import {
+  Item,
+  ItemActions,
+  ItemContent,
+  ItemDescription,
+  ItemTitle,
+} from "@/components/ui/item"
+
 export default function App() {
     const [summary, setSummary] = useState<LogSummary | null>(null);
     const [error, setError] = useState<string | null>(null);
@@ -50,36 +60,25 @@ export default function App() {
     }
 
     return (
-        <div
+        <div className="flex flex-col gap-6"
             style={{
                 height: "100vh",
                 display: "flex",
-                flexDirection: "column",
                 justifyContent: "center",
                 alignItems: "center",
-                textAlign: "center",
-                gap: "20px",
             }}
         >
-            <label
-                style={{
-                    display: "inline-block",
-                    padding: "12px 24px",
-                    backgroundColor: "#1976d2",
-                    color: "white",
-                    borderRadius: "8px",
-                    cursor: "pointer",
-                    fontSize: "16px",
-                }}
-            >
-                Upload Log File
-                <input
-                    type="file"
-                    accept=".txt"
-                    onChange={handleUpload}
-                    style={{ display: "none" }}
-                />
-            </label>
+            <Item variant="outline">
+                <ItemContent>
+                    <ItemTitle>Logfile Upload</ItemTitle>
+                    <ItemDescription>
+                        Please select the logfile you wish to analyze.
+                    </ItemDescription>
+                </ItemContent>
+                <ItemActions>
+                    <Input id="picture" type="file" accept=".txt" onChange={handleUpload} />
+                </ItemActions>
+            </Item>
 
             {summary && (
                 <div
