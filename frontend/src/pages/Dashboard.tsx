@@ -44,7 +44,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
 
     const levelsParam = debouncedLevels ? `&levels=${encodeURIComponent(debouncedLevels)}` : "";
     const domainsParam = debouncedDomains ? `&domains=${encodeURIComponent(debouncedDomains)}` : "";
-    const logUrl = `${baseUrl}/stream_logs?session_id=${sessionId}${levelsParam}${domainsParam}`;
+    const keywordsParam = ""
+    const logUrl = `${baseUrl}/stream_logs?session_id=${sessionId}${levelsParam}${domainsParam}${keywordsParam}`;
 
     useEffect(() => {
         const cleanupSession = () => {

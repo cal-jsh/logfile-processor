@@ -35,6 +35,7 @@ pub struct LogFilterQuery {
     pub session_id: String,
     pub domains: Option<String>,
     pub levels: Option<String>,
+    pub keywords: Option<String>,
 }
 
 /// SSE stream of filtered logs
@@ -44,7 +45,8 @@ pub struct LogFilterQuery {
     params(
         ("session_id" = String, Query, description = "Log session ID"),
         ("domains" = Option<String>, Query, description = "Comma-separated log domains to include"),
-        ("levels" = Option<String>, Query, description = "Comma-separated log levels to include")
+        ("levels" = Option<String>, Query, description = "Comma-separated log levels to include"),
+        ("keywords" = Option<String>, Query, description = "Comma-separated keywords to include")
     ),
     responses(
         (
@@ -77,16 +79,19 @@ pub async fn stream_filtered_logs(
         .filter_map(move |line| {
             let filter_levels = query.levels.clone().map(|s| s.split(',').map(|x| x.trim().to_string()).collect::<Vec<_>>());
             let filter_domains = query.domains.clone().map(|s| s.split(',').map(|x| x.trim().to_string()).collect::<Vec<_>>());
+            let filter_keywords = query.keywords.clone().map(|s| s.split(',').map(|x| x.trim().to_string()).collect::<Vec<_>>());
 
             async move {
                 if let Some(caps) = LOG_REGEX.captures(&line) {
                     let level = caps["level"].to_string();
                     let domain = caps["domain"].to_string();
+                    let message = caps["message"].to_string();
 
                     let level_ok = filter_levels.as_ref().map_or(true, |v| v.contains(&level));
                     let domain_ok = filter_domains.as_ref().map_or(true, |v| v.contains(&domain));
+                    let keyword_ok = filter_keywords.as_ref().map_or(true, |v| v.contains(&message));
 
-                    if level_ok && domain_ok {
+                    if level_ok && domain_ok && keyword_ok {
                         return Some(Event::default().data(line));
                     }
                 }

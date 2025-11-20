@@ -8,7 +8,9 @@ use regex::Regex;
 use std::collections::{HashMap, HashSet};
 
 pub static LOG_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"^\[(?P<ts>[^\]]+)\]\s\[(?P<level>[^\]]+)\]\s\[(?P<domain>[^\]]+)\]").unwrap()
+    Regex::new(
+        r"^\[(?P<ts>[^\]]+)\]\s\[(?P<level>[^\]]+)\]\s\[(?P<domain>[^\]]+)\]\s*(?P<message>.*)$"
+    ).unwrap()
 });
 
 /// Parse log text and optionally filter by domains or levels
