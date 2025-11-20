@@ -7,11 +7,11 @@ import { Dashboard } from "./pages/Dashboard";
 // shadcn/ui components
 import { Input } from "@/components/ui/input"
 import {
-  Item,
-  ItemActions,
-  ItemContent,
-  ItemDescription,
-  ItemTitle,
+    Item,
+    ItemActions,
+    ItemContent,
+    ItemDescription,
+    ItemTitle,
 } from "@/components/ui/item"
 
 export default function App() {
@@ -76,43 +76,9 @@ export default function App() {
                     </ItemDescription>
                 </ItemContent>
                 <ItemActions>
-                    <Input id="picture" type="file" accept=".txt" onChange={handleUpload} />
+                    <Input id="picture" type="file" accept=".txt" onChange={handleUpload} className="cursor-pointer border hover:bg-gray-100 transition-colors" />
                 </ItemActions>
             </Item>
-
-            {summary && (
-                <div
-                    style={{
-                        marginTop: "20px",
-                        padding: "20px",
-                        background: "#f5f5f5",
-                        borderRadius: "8px",
-                        width: "400px",
-                        textAlign: "left",
-                    }}
-                >
-                    <h3>Log Summary</h3>
-
-                    <h4>Levels</h4>
-                    <ul>
-                        {Object.entries(summary.levels).map(([level, count]) => (
-                            <li key={level}>
-                                {level}: {count}
-                            </li>
-                        ))}
-                    </ul>
-
-                    <h4>Total Lines</h4>
-                    <p>{summary.total_lines}</p>
-
-                    <h4>Unique Domains</h4>
-                    <ul>
-                        {summary.unique_domains.map((domain) => (
-                            <li key={domain}>{domain}</li>
-                        ))}
-                    </ul>
-                </div>
-            )}
 
             {error && <p style={{ color: "red" }}>{error}</p>}
         </div>
