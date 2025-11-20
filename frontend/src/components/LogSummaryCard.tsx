@@ -8,30 +8,36 @@ interface Props {
 }
 
 export default function LogSummaryCard({ summary }: Props) {
-    return (
-        <Card>
-            <CardHeader>
-                <CardTitle>Logfile Summary</CardTitle>
-            </CardHeader>
-            <CardContent>
-                <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
-                    {LEVEL_ORDER.map((level) => {
-                        const count = (summary.levels as any)?.[level] ?? 0;
-                        return (
-                            <div key={level} style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                                <div style={{ color: "#0f0e0eff", minWidth: 48 }}>{level}</div>
-                                <Badge
-                                    className="h-5 min-w-5 rounded-full px-1 font-mono tabular-nums"
-                                    style={{ color: colorMap[level] || undefined }}
-                                    variant="outline"
-                                >
-                                    {count}
-                                </Badge>
-                            </div>
-                        );
-                    })}
-                </div>
-            </CardContent>
-        </Card>
-    );
+  return (
+    <Card className="p-4">
+      <div className="flex flex-wrap items-center gap-6">
+        <h3 className="text-lg font-semibold">Logfile Summary</h3>
+
+        <div className="flex flex-wrap items-center gap-4">
+          {LEVEL_ORDER.map((level) => {
+            const count = summary.levels?.[level] ?? 0;
+
+            return (
+              <div
+                key={level}
+                className="flex items-center gap-2"
+              >
+                <span className="text-muted-foreground w-12 font-medium">
+                  {level}
+                </span>
+
+                <Badge
+                  className="h-5 min-w-5 rounded-full px-2 font-mono tabular-nums"
+                  style={{ color: colorMap[level] }}
+                  variant="outline"
+                >
+                  {count}
+                </Badge>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </Card>
+  );
 }
