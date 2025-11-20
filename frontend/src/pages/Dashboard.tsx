@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { LogViewer } from "../components/LogViewer";
 import type { LogSummary } from "../../openapi/client/models/LogSummary";
 import SearchableMultiSelect from "../components/ui/searchablemultiselect";
+import LogSummaryCard from "../components/LogSummaryCard";
 
 interface DashboardProps {
     sessionId: string;
@@ -62,7 +63,9 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
 
     return (
         <div style={{ padding: "20px" }}>
-            <h1>Logfile Processor</h1>
+            <div style={{ marginBottom: 12 }}>
+                <LogSummaryCard summary={summary} />
+            </div>
 
             {/* Filters - searchable multi-selects for Levels and Domains */}
             <div style={{ marginBottom: "10px", background: "#353333ff", padding: 8, borderRadius: 4, display: 'flex', gap: 12, alignItems: 'center' }}>
