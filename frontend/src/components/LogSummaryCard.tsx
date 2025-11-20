@@ -10,7 +10,7 @@ interface Props {
 export default function LogSummaryCard({ summary }: Props) {
   return (
     <Card className="p-4">
-      <div className="flex flex-wrap items-center gap-6">
+      <div className="flex items-center justify-between w-full">
         <h3 className="text-lg font-semibold">Logfile Summary</h3>
 
         <div className="flex flex-wrap items-center gap-4">
