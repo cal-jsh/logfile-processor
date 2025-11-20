@@ -76,7 +76,7 @@ export default function App() {
                     </ItemDescription>
                 </ItemContent>
                 <ItemActions>
-                    <Input id="picture" type="file" accept=".txt" onChange={handleUpload} className="cursor-pointer border hover:bg-gray-100 transition-colors" />
+                    <Input id="logfile-upload" type="file" accept=".txt" onChange={handleUpload} className="cursor-pointer border hover:bg-gray-100 transition-colors" />
                 </ItemActions>
             </Item>
 
