@@ -9,9 +9,9 @@ interface Props {
 
 export default function LogSummaryCard({ summary }: Props) {
   return (
-    <Card className="p-4">
+    <Card className="p-2">
       <div className="flex items-center justify-between w-full">
-        <h3 className="text-lg font-semibold">Logfile Summary</h3>
+        <h3 className="text-lg text-base font-semibold">Logfile Summary</h3>
 
         <div className="flex flex-wrap items-center gap-4">
           {LEVEL_ORDER.map((level) => {
@@ -22,7 +22,7 @@ export default function LogSummaryCard({ summary }: Props) {
                 key={level}
                 className="flex items-center gap-2"
               >
-                <span className="text-muted-foreground w-12 font-medium">
+                <span className="text-muted-foreground text-sm w-12 font-medium">
                   {level}
                 </span>
 
