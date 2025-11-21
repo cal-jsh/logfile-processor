@@ -3,6 +3,8 @@ import { LogViewer } from "../components/LogViewer";
 import type { LogSummary } from "../../openapi/client/models/LogSummary";
 import SearchableMultiSelect from "../components/ui/searchablemultiselect";
 import LogSummaryCard from "../components/LogSummaryCard";
+import { Label } from "../components/ui/label";
+import { Checkbox } from "../components/ui/checkbox";
 
 interface DashboardProps {
     sessionId: string;
@@ -92,16 +94,21 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
                     </div>
                 </div>
 
-                {/* Show delta checkbox */}
-                <label style={{ marginLeft: "20px", color: "#080808ff"}}>
-                    <input
-                        type="checkbox"
+                {/* Show delta checkbox (shadcn UI) */}
+                <Label htmlFor="toggle-show-delta" className="flex items-start gap-3 rounded-lg border p-3 cursor-pointer">
+                    <Checkbox
+                        id="toggle-show-delta"
                         checked={showDelta}
-                        onChange={(e) => setShowDelta(e.target.checked)}
-                        style={{ marginRight: 4 }}
+                        onCheckedChange={(checked: boolean | "indeterminate") => setShowDelta(!!checked)}
+                        className="data-[state=checked]:border-blue-600 data-[state=checked]:bg-blue-600 data-[state=checked]:text-white dark:data-[state=checked]:border-blue-700 dark:data-[state=checked]:bg-blue-700"
                     />
-                    Show time delta
-                </label>
+                    <div className="grid gap-1.5 font-normal">
+                        <p className="text-sm leading-none font-medium">Show time delta</p>
+                        <p className="text-muted-foreground text-sm">You can enable or disable showing the time difference between log entries.</p>
+                    </div>
+                </Label>
+
+
             </div>
 
             {/* LogViewer */}
