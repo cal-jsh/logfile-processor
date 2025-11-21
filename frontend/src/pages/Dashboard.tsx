@@ -69,9 +69,9 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
             </div>
 
             {/* Filters - searchable multi-selects for Levels and Domains */}
-            <div style={{ marginBottom: "10px", background: "#353333ff", padding: 8, borderRadius: 4, display: 'flex', gap: 12, alignItems: 'center' }}>
+            <div style={{ marginBottom: "10px", background: "#ffffffff", padding: 8, borderRadius: 4, display: 'flex', gap: 12, alignItems: 'center', borderColor: '#00000033', borderWidth: 1, borderStyle: 'solid' }}>
                 <div>
-                    <div style={{ color: '#fff', marginBottom: 6 }}>Levels ({selectedLevels.length} selected)</div>
+                    <div style={{ color: '#000000ff', marginBottom: 6 }}>Levels ({selectedLevels.length} selected)</div>
                     <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                         <SearchableMultiSelect options={levelOptions} selected={selectedLevels} onChange={setSelectedLevels} />
                         <div style={{ display: 'flex', flexDirection: 'column' }}>
@@ -82,7 +82,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
                 </div>
 
                 <div>
-                    <div style={{ color: '#fff', marginBottom: 6 }}>Domains ({selectedDomains.length} selected)</div>
+                    <div style={{ color: '#080808ff', marginBottom: 6 }}>Domains ({selectedDomains.length} selected)</div>
                     <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                         <SearchableMultiSelect options={domainOptions} selected={selectedDomains} onChange={setSelectedDomains} />
                         <div style={{ display: 'flex', flexDirection: 'column' }}>
@@ -93,7 +93,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
                 </div>
 
                 {/* Show delta checkbox */}
-                <label style={{ marginLeft: "20px", color: "#fff"}}>
+                <label style={{ marginLeft: "20px", color: "#080808ff"}}>
                     <input
                         type="checkbox"
                         checked={showDelta}
