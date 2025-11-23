@@ -44,3 +44,7 @@ pub fn parse_log(
         unique_domains: domains.into_iter().collect(),
     }
 }
+
+
+#[cfg(test)]
+mod tests;
