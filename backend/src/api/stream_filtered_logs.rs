@@ -19,7 +19,7 @@ use futures::{stream, StreamExt};
 // serde
 use serde::Deserialize;
 // tracing
-use tracing::info;
+use tracing::{debug, info};
 // std
 use std::convert::Infallible;
 use std::pin::Pin;
@@ -64,6 +64,8 @@ pub struct LogFilterQuery {
 pub async fn stream_filtered_logs(
     Query(query): Query<LogFilterQuery>,
 ) -> Sse<Pin<Box<dyn futures::Stream<Item = Result<Event, Infallible>> + Send>>> {
+    debug!("Logfile filter request: Keywords {:?}, Domains {:?}, Levels {:?}", &query.keywords, &query.domains, &query.levels);
+
     let file_path = match get_user_log(&query.session_id) {
         Some(path) => path,
         None => return Sse::new(stream::empty().boxed()),
@@ -89,7 +91,10 @@ pub async fn stream_filtered_logs(
 
                     let level_ok = filter_levels.as_ref().map_or(true, |v| v.contains(&level));
                     let domain_ok = filter_domains.as_ref().map_or(true, |v| v.contains(&domain));
-                    let keyword_ok = filter_keywords.as_ref().map_or(true, |v| v.contains(&message));
+                    let keyword_ok = filter_keywords.as_ref().map_or(true, |v| {
+                        // Match if any of the provided keywords appear within the message
+                        v.iter().any(|kw| message.contains(kw))
+                    });
 
                     if level_ok && domain_ok && keyword_ok {
                         return Some(Event::default().data(line));
