@@ -1,12 +1,9 @@
 import { useEffect, useState } from "react";
 import { LogViewer } from "../components/LogViewer";
 import type { LogSummary } from "../../openapi/client/models/LogSummary";
-import SearchableMultiSelect from "../components/ui/searchablemultiselect";
+import SearchableMultiSelect from "../components/SearchableMultiSelect";
 import LogSummaryCard from "../components/LogSummaryCard";
-import { Label } from "../components/ui/label";
-import { Checkbox } from "../components/ui/checkbox";
 import LogViewerOptionsCard from "../components/LogViewerOptionsCard";
-import { Ellipsis } from "lucide-react"
 
 interface DashboardProps {
     sessionId: string;
