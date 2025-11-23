@@ -5,10 +5,8 @@ import SearchableMultiSelect from "../components/ui/searchablemultiselect";
 import LogSummaryCard from "../components/LogSummaryCard";
 import { Label } from "../components/ui/label";
 import { Checkbox } from "../components/ui/checkbox";
-import { Card, CardHeader, CardTitle, CardContent } from "../components/ui/card";
-import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "../components/ui/collapsible";
+import LogViewerOptionsCard from "../components/LogViewerOptionsCard";
 import { Ellipsis } from "lucide-react"
-import { Button } from "@/components/ui/button"
 
 interface DashboardProps {
     sessionId: string;
@@ -74,40 +72,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
                 <LogSummaryCard summary={summary} />
             </div>
 
-            {/* Show delta checkbox (shadcn UI) */}
-            <Card className="p-2 mb-4">
-                <Collapsible defaultOpen={true} className="flex flex-wrap justify-between w-full">
-                    <CardHeader className="p-0">
-                        <div className="flex items-center justify-around">
-                            <CardTitle className="text-sm m-0 mr-2">Display Options</CardTitle>
-                            <CollapsibleTrigger asChild>
-                                <Button variant="ghost" size="icon" className="size-8">
-                                    <Ellipsis />
-                                    <span className="sr-only">Toggle</span>
-                                </Button>
-                            </CollapsibleTrigger>
-                        </div>
-                    </CardHeader>
-                    <CardContent className="p-0">
-                        <CollapsibleContent>
-                            <div className="mt-0">
-                                <Label htmlFor="toggle-show-delta" className="flex items-start gap-3">
-                                    <Checkbox
-                                        id="toggle-show-delta"
-                                        checked={showDelta}
-                                        onCheckedChange={(checked: boolean | "indeterminate") => setShowDelta(!!checked)}
-                                        className="data-[state=checked]:border-blue-600 data-[state=checked]:bg-blue-600 data-[state=checked]:text-white dark:data-[state=checked]:border-blue-700 dark:data-[state=checked]:bg-blue-700"
-                                    />
-                                    <div className="grid gap-1.5 font-normal">
-                                        <p className="text-sm leading-none font-medium">Show time delta</p>
-                                        <p className="text-muted-foreground text-sm">You can enable or disable showing the time difference between log entries.</p>
-                                    </div>
-                                </Label>
-                            </div>
-                        </CollapsibleContent>
-                    </CardContent>
-                </Collapsible>
-            </Card>
+            {/* Show delta options card */}
+            <LogViewerOptionsCard showDelta={showDelta} setShowDelta={setShowDelta} />
 
             {/* Filters - searchable multi-selects for Levels and Domains */}
             <div style={{ marginBottom: "10px", background: "#ffffffff", padding: 8, borderRadius: 4, display: 'flex', gap: 12, alignItems: 'center', borderColor: '#00000033', borderWidth: 1, borderStyle: 'solid' }}>
