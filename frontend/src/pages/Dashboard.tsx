@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { LogViewer } from "../components/LogViewer";
 import type { LogSummary } from "../../openapi/client/models/LogSummary";
 import SearchableMultiSelect from "../components/SearchableMultiSelect";
+import { Card, CardContent } from "../components/ui/card";
 import LogSummaryCard from "../components/LogSummaryCard";
 import LogViewerOptionsCard from "../components/LogViewerOptionsCard";
 
@@ -72,22 +73,22 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
             {/* Show delta options card */}
             <LogViewerOptionsCard showDelta={showDelta} setShowDelta={setShowDelta} />
 
-            {/* Filters - searchable multi-selects for Levels and Domains */}
-            <div style={{ marginBottom: "10px", background: "#ffffffff", padding: 8, borderRadius: 4, display: 'flex', gap: 12, alignItems: 'center', borderColor: '#00000033', borderWidth: 1, borderStyle: 'solid' }}>
-                <div>
-                    <div style={{ color: '#000000ff', marginBottom: 6 }}>Levels ({selectedLevels.length} selected)</div>
-                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                        <SearchableMultiSelect options={levelOptions} selected={selectedLevels} onChange={setSelectedLevels} />
-                    </div>
-                </div>
+            {/* Filters - searchable multi-selects for Levels and Domains (single enclosing card, horizontal layout) */}
+            <Card className="mb-3">
+                <CardContent className="pl-2">
+                    <div className="flex gap-8">
+                        <div className="flex items-center gap-4">
+                            <span className="font-muted">Levels</span>
+                            <SearchableMultiSelect options={levelOptions} selected={selectedLevels} onChange={setSelectedLevels} />
+                        </div>
 
-                <div>
-                    <div style={{ color: '#080808ff', marginBottom: 6 }}>Domains ({selectedDomains.length} selected)</div>
-                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                        <SearchableMultiSelect options={domainOptions} selected={selectedDomains} onChange={setSelectedDomains} />
+                        <div className="flex items-center gap-4">
+                            <span className="font-muted">Domains</span>
+                            <SearchableMultiSelect options={domainOptions} selected={selectedDomains} onChange={setSelectedDomains} />
+                        </div>
                     </div>
-                </div>
-            </div>
+                </CardContent>
+            </Card>
 
             {/* LogViewer */}
             <LogViewer url={logUrl} maxLines={100000} showDelta={showDelta} />
