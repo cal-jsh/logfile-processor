@@ -78,10 +78,6 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
                     <div style={{ color: '#000000ff', marginBottom: 6 }}>Levels ({selectedLevels.length} selected)</div>
                     <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                         <SearchableMultiSelect options={levelOptions} selected={selectedLevels} onChange={setSelectedLevels} />
-                        <div style={{ display: 'flex', flexDirection: 'column' }}>
-                            <button onClick={selectAllLevels} style={{ marginBottom: 6 }}>All</button>
-                            <button onClick={deselectAllLevels}>None</button>
-                        </div>
                     </div>
                 </div>
 
@@ -89,10 +85,6 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
                     <div style={{ color: '#080808ff', marginBottom: 6 }}>Domains ({selectedDomains.length} selected)</div>
                     <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                         <SearchableMultiSelect options={domainOptions} selected={selectedDomains} onChange={setSelectedDomains} />
-                        <div style={{ display: 'flex', flexDirection: 'column' }}>
-                            <button onClick={selectAllDomains} style={{ marginBottom: 6 }}>All</button>
-                            <button onClick={deselectAllDomains}>None</button>
-                        </div>
                     </div>
                 </div>
             </div>

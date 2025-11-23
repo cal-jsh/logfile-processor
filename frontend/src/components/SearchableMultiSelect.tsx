@@ -71,6 +71,33 @@ export default function SearchableMultiSelect({
             <CommandEmpty>No results.</CommandEmpty>
 
             <CommandGroup>
+              <CommandItem
+                key="__select_all"
+                value="__select_all"
+                onSelect={() => {
+                  onChange(options.slice());
+                  setOpen(false);
+                }}
+              >
+                <div className="w-full text-center">Select all</div>
+              </CommandItem>
+
+              <CommandItem
+                key="__select_none"
+                value="__select_none"
+                onSelect={() => {
+                  onChange([]);
+                  setOpen(false);
+                }}
+              >
+                <div className="w-full text-center">Select none</div>
+              </CommandItem>
+            </CommandGroup>
+
+            {/* separator between the actions and the selectable options */}
+            <div className="border-t border-gray-200 my-1 mx-2" role="separator" />
+
+            <CommandGroup>
               {filtered.map((opt) => (
                 <CommandItem
                   key={opt}
@@ -84,6 +111,7 @@ export default function SearchableMultiSelect({
                 </CommandItem>
               ))}
             </CommandGroup>
+
           </CommandList>
         </Command>
       </PopoverContent>
