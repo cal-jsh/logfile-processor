@@ -23,29 +23,15 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
 
     const [showDelta, setShowDelta] = useState(false); // controls delta display
 
-    // Initialize selected arrays from summary (all selected by default)
-    useEffect(() => {
-        if (!summary) return;
-        setSelectedLevels(Object.keys(summary.levels || {}));
-        setSelectedDomains(summary.unique_domains || []);
-    }, [summary]);
-
     // Debounce changes to selected arrays before updating query params
     useEffect(() => {
         const timer = setTimeout(() => {
             setDebouncedLevels(selectedLevels.join(","));
             setDebouncedDomains(selectedDomains.join(","));
-        }, 300);
-        return () => clearTimeout(timer);
-    }, [selectedLevels, selectedDomains]);
-
-    // Debounce keywords list
-    useEffect(() => {
-        const timer = setTimeout(() => {
             setDebouncedKeywords(selectedKeywords.join(","));
         }, 300);
         return () => clearTimeout(timer);
-    }, [selectedKeywords]);
+    }, [selectedLevels, selectedDomains, selectedKeywords]);
 
     const levelOptions = Object.keys(summary.levels || {});
     const domainOptions = summary.unique_domains || [];

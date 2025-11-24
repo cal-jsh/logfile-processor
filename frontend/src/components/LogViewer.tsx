@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Virtuoso } from "react-virtuoso";
 import { colorMap } from "../lib/colorMap";
+import { Spinner } from "./ui/spinner";
 
 interface LogViewerProps {
     url: string;
@@ -15,32 +16,55 @@ function formatDelta(ms: number): string {
 }
 
 export const LogViewer: React.FC<LogViewerProps> = ({ url, maxLines = 2000, showDelta }) => {
-    const linesRef = useRef<string[]>([]);         
-    const bufferRef = useRef<string[]>([]);        
+    const linesRef = useRef<string[]>([]);
+    const bufferRef = useRef<string[]>([]);
     const evtRef = useRef<EventSource | null>(null);
     const prevUrlRef = useRef<string | null>(null);
-    const [, forceRender] = useState(0);          
+    const [, forceRender] = useState(0);
+    const [isConnecting, setIsConnecting] = useState(false);
 
-    // Clear logs when URL changes (filters)
+    // Mark connecting when URL changes; keep existing lines visible until new data arrives
     useEffect(() => {
         if (prevUrlRef.current !== url) {
             linesRef.current = [];
             bufferRef.current = [];
             prevUrlRef.current = url;
+            setIsConnecting(true);
             forceRender(r => r + 1);
         }
     }, [url]);
 
     // SSE + buffer
     useEffect(() => {
+        // close any previously-open EventSource to avoid duplicates
+        if (evtRef.current) {
+            try { evtRef.current.close(); } catch (_) {}
+            evtRef.current = null;
+        }
+
         const es = new EventSource(url);
         evtRef.current = es;
 
+        es.onopen = () => {
+            console.log("SSE opened");
+            setIsConnecting(false);
+        };
+
         es.onmessage = (event) => {
+            if (isConnecting) {
+                setIsConnecting(false);
+            }
+
             bufferRef.current.push(event.data);
         };
 
+
         const flushInterval = setInterval(() => {
+            // once we have flushed new lines, stop showing the connecting spinner
+            if (isConnecting && linesRef.current.length > 0) {
+                setIsConnecting(false);
+            }
+
             if (bufferRef.current.length === 0) return;
 
             linesRef.current = [...linesRef.current, ...bufferRef.current];
@@ -50,16 +74,22 @@ export const LogViewer: React.FC<LogViewerProps> = ({ url, maxLines = 2000, show
                 linesRef.current = linesRef.current.slice(linesRef.current.length - maxLines);
             }
 
+
             forceRender(r => r + 1);
-        }, 100);
+        }, 50);
 
         es.onerror = (err) => {
             console.error("SSE error:", err);
-            es.close();
+            // stop showing connecting spinner on error
+            setIsConnecting(false);
+            try { es.close(); } catch (_) {}
+            if (evtRef.current === es) evtRef.current = null;
+            clearInterval(flushInterval);
         };
 
         return () => {
-            es.close();
+            // try { es.close(); } catch (_) {}
+            // if (evtRef.current === es) evtRef.current = null;
             clearInterval(flushInterval);
         };
     }, [url, maxLines]);
@@ -67,17 +97,13 @@ export const LogViewer: React.FC<LogViewerProps> = ({ url, maxLines = 2000, show
     let prevTimestamp = 0;
 
     return (
-        <div style={{ height: 750, border: "1px solid #ccc", borderRadius: 4, overflow: "hidden" }}>
-            {linesRef.current.length === 0 ? (
-                <div
-                    style={{
-                        padding: 10,
-                        background: "#1e1e1e",
-                        color: "#fff",
-                        fontFamily: "monospace"
-                    }}
-                >
-                    No logs yet.
+        <div style={{ height: 750, border: "1px solid #ccc", borderRadius: 4, overflow: "hidden", position: "relative" }}>
+            {isConnecting ? (
+                <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.4)", zIndex: 50 }}>
+                    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
+                        <Spinner className="h-8 w-8 text-white" />
+                        <div style={{ color: "#fff", fontSize: 12 }}>Reconnecting...</div>
+                    </div>
                 </div>
             ) : (
                 <Virtuoso
