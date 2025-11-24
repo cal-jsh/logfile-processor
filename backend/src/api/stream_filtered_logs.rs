@@ -12,6 +12,7 @@ use axum::{
 };
 // tokio
 use tokio::fs::File;
+use tokio::time::{interval, Duration};
 // tokio-util
 use tokio_util::codec::{FramedRead, LinesCodec};
 // futures
@@ -76,7 +77,8 @@ pub async fn stream_filtered_logs(
         Err(_) => return Sse::new(stream::empty().boxed()),
     };
 
-    let boxed_stream = FramedRead::new(file, LinesCodec::new())
+    // Build a filtered stream of log lines (as SSE `Event`s)
+    let file_lines = FramedRead::new(file, LinesCodec::new())
         .map(|line_res| line_res.unwrap_or_default()) // handle read errors
         .filter_map(move |line| {
             let filter_levels = query.levels.clone().map(|s| s.split(',').map(|x| x.trim().to_string()).collect::<Vec<_>>());
@@ -97,16 +99,29 @@ pub async fn stream_filtered_logs(
                     });
 
                     if level_ok && domain_ok && keyword_ok {
-                        return Some(Event::default().data(line));
+                        return Some(line);
                     }
                 }
                 None
             }
         })
-        .map(|ev| Ok(ev))
-        .boxed();
+        .map(|line| {
+            // Trace each line that is being emitted as an SSE event (helpful for debugging)
+            // debug!("Emitting SSE event for line (truncated): {}", &line.chars().take(200).collect::<String>());
+            Event::default().data(line)
+        });
 
-    Sse::new(boxed_stream)
+    // Heartbeat stream to keep connections alive and friendly to proxies
+    // This prevents an SSE error on the client side after a period of inactivity as the server closes the connection
+    let heartbeat = stream::unfold(interval(Duration::from_secs(15)), |mut intv| async move {
+        intv.tick().await;
+        // send a comment so EventSource does not trigger a message handler
+        Some((Ok(Event::default().comment("hb")), intv))
+    });
+
+    let final_stream = file_lines.map(|ev| Ok(ev)).chain(heartbeat).boxed();
+
+    Sse::new(final_stream)
 }
 
 #[utoipa::path(
