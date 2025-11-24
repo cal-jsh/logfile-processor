@@ -22,6 +22,7 @@ export const LogViewer: React.FC<LogViewerProps> = ({ url, maxLines = 2000, show
     const prevUrlRef = useRef<string | null>(null);
     const [, forceRender] = useState(0);
     const [isConnecting, setIsConnecting] = useState(false);
+    const [isFollowing, setIsFollowing] = useState(true);
 
     // Mark connecting when URL changes; keep existing lines visible until new data arrives
     useEffect(() => {
@@ -109,7 +110,8 @@ export const LogViewer: React.FC<LogViewerProps> = ({ url, maxLines = 2000, show
                 <Virtuoso
                     style={{ height: "100%", background: "#1e1e1e", color: "white" }}
                     data={linesRef.current}
-                    followOutput="smooth"
+                    followOutput={isFollowing ? "smooth" : false}
+                    atBottomStateChange={(atBottom) => setIsFollowing(atBottom)}
                     itemContent={(index, line) => {
                         // Timestamp
                         const tsMatch = line.match(/^\[(.*?)\]/);
