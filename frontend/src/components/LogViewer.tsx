@@ -88,8 +88,8 @@ export const LogViewer: React.FC<LogViewerProps> = ({ url, maxLines = 2000, show
         };
 
         return () => {
-            // try { es.close(); } catch (_) {}
-            // if (evtRef.current === es) evtRef.current = null;
+            try { es.close(); } catch (_) {}
+            if (evtRef.current === es) evtRef.current = null;
             clearInterval(flushInterval);
         };
     }, [url, maxLines]);
