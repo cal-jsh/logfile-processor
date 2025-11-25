@@ -1,45 +1,156 @@
-import { useEffect, useRef, useState } from "react";
-import { Virtuoso } from "react-virtuoso";
+import { useEffect, useRef, useState, useCallback } from "react";
+import { Virtuoso, VirtuosoHandle } from "react-virtuoso";
+import { Input } from "@/components/ui/input";
+// NOTE: using a plain div for results scrolling; you can swap back to shadcn ScrollArea if you prefer
 import { colorMap } from "../lib/colorMap";
 import { Spinner } from "./ui/spinner";
 
-interface LogViewerProps {
-    url: string;
-    maxLines?: number;
-    showDelta: boolean; // controlled by parent
+/* ---------------- debounce helper (no dependency) ---------------- */
+function debounce<T extends (...args: any[]) => void>(fn: T, delay: number) {
+    let timer: number;
+    return (...args: Parameters<T>) => {
+        clearTimeout(timer);
+        timer = window.setTimeout(() => fn(...args), delay);
+    };
 }
 
+/* ----------------- formatDelta ------------------ */
 function formatDelta(ms: number): string {
     if (ms < 0.001) return `${Math.round(ms * 1_000_000)} µs`;
     else if (ms < 1000) return `${Math.round(ms)} ms`;
     else return `${(ms / 1000).toFixed(2)} s`;
 }
 
-export const LogViewer: React.FC<LogViewerProps> = ({ url, maxLines = 2000, showDelta }) => {
+interface LogViewerProps {
+    url: string;
+    maxLines?: number;
+    showDelta: boolean;
+}
+
+export const LogViewer: React.FC<LogViewerProps> = ({
+    url,
+    maxLines = 2000,
+    showDelta,
+}) => {
     const linesRef = useRef<string[]>([]);
     const bufferRef = useRef<string[]>([]);
     const evtRef = useRef<EventSource | null>(null);
     const prevUrlRef = useRef<string | null>(null);
+    const virtuosoRef = useRef<VirtuosoHandle>(null);
+
     const [, forceRender] = useState(0);
     const [isConnecting, setIsConnecting] = useState(false);
     const [isFollowing, setIsFollowing] = useState(true);
 
-    // Mark connecting when URL changes; keep existing lines visible until new data arrives
+    /* ---------------------- SEARCH STATE ----------------------- */
+    const [search, setSearch] = useState("");
+    const [searchResults, setSearchResults] = useState<
+        { line: number; text: string }[]
+    >([]);
+    const [isSearching, setIsSearching] = useState(false);
+
+    const debouncedSetSearch = useCallback(
+        debounce((value: string) => setSearch(value), 150),
+        []
+    );
+
+    /* utility: yield control (use idle callback if available) */
+    const yieldControl = () =>
+        new Promise<void>((resolve) => {
+            if (typeof (window as any).requestIdleCallback === "function") {
+                (window as any).requestIdleCallback(() => resolve());
+            } else {
+                setTimeout(() => resolve(), 0);
+            }
+        });
+
+    /* ---------------------- ASYNC SEARCH -----------------------
+       Important changes:
+       - Effect depends only on `search` (so frequent lines updates won't restart it)
+       - Limit number of rendered results to `RESULT_LIMIT`
+       - Use yieldControl() between chunks
+    ----------------------------------------------------------- */
+    useEffect(() => {
+        const MIN_CHARS = 2;
+        const CHUNK_SIZE = 500;
+        const RESULT_LIMIT = 1000; // max displayed results (tune as needed)
+
+        if (!search || search.length < MIN_CHARS) {
+            setSearchResults([]);
+            setIsSearching(false);
+            return;
+        }
+
+        let cancelled = false;
+        setIsSearching(true);
+        setSearchResults([]);
+
+        const needle = search.toLowerCase();
+
+        const run = async () => {
+            const lines = linesRef.current; // capture current array reference
+            const results: { line: number; text: string }[] = [];
+
+            // iterate in chunks, yield to the browser between chunks
+            for (let i = 0; i < lines.length; i += CHUNK_SIZE) {
+                if (cancelled) return;
+
+                const batch = lines.slice(i, i + CHUNK_SIZE);
+                for (let j = 0; j < batch.length; ++j) {
+                    if (cancelled) return;
+                    const text = batch[j];
+                    // for slightly better perf avoid creating many lowercase copies:
+                    if (text.toLowerCase().includes(needle)) {
+                        results.push({ line: i + j, text });
+                        if (results.length >= RESULT_LIMIT) break;
+                    }
+                }
+
+                // yield to UI thread
+                await yieldControl();
+
+                if (results.length >= RESULT_LIMIT) break;
+            }
+
+            if (!cancelled) {
+                setSearchResults(results);
+                setIsSearching(false);
+            }
+        };
+
+        run();
+
+        return () => {
+            cancelled = true;
+            setIsSearching(false);
+        };
+    }, [search]); // <-- only depends on search now
+
+    const jumpToLine = (line: number) => {
+        virtuosoRef.current?.scrollToIndex({
+            index: line,
+            align: "center",
+            behavior: "smooth",
+        });
+    };
+
+    /* ---------------------- URL CHANGE RESET -------------------- */
     useEffect(() => {
         if (prevUrlRef.current !== url) {
             linesRef.current = [];
             bufferRef.current = [];
             prevUrlRef.current = url;
             setIsConnecting(true);
-            forceRender(r => r + 1);
+            forceRender((r) => r + 1);
         }
     }, [url]);
 
-    // SSE + buffer
+    /* ---------------------- SSE PIPELINE ------------------------ */
     useEffect(() => {
-        // close any previously-open EventSource to avoid duplicates
         if (evtRef.current) {
-            try { evtRef.current.close(); } catch (_) {}
+            try {
+                evtRef.current.close();
+            } catch {}
             evtRef.current = null;
         }
 
@@ -47,73 +158,119 @@ export const LogViewer: React.FC<LogViewerProps> = ({ url, maxLines = 2000, show
         evtRef.current = es;
 
         es.onopen = () => {
-            console.log("SSE opened");
             setIsConnecting(false);
         };
 
         es.onmessage = (event) => {
-            if (isConnecting) {
-                setIsConnecting(false);
-            }
-
             bufferRef.current.push(event.data);
         };
 
-
         const flushInterval = setInterval(() => {
-            // once we have flushed new lines, stop showing the connecting spinner
-            if (isConnecting && linesRef.current.length > 0) {
-                setIsConnecting(false);
-            }
-
             if (bufferRef.current.length === 0) return;
 
+            // create a new array (keeps previous ref intact until assignment)
             linesRef.current = [...linesRef.current, ...bufferRef.current];
             bufferRef.current = [];
 
             if (linesRef.current.length > maxLines) {
-                linesRef.current = linesRef.current.slice(linesRef.current.length - maxLines);
+                linesRef.current = linesRef.current.slice(
+                    linesRef.current.length - maxLines
+                );
             }
 
-
-            forceRender(r => r + 1);
+            forceRender((r) => r + 1);
         }, 50);
 
-        es.onerror = (err) => {
-            console.error("SSE error:", err);
-            // stop showing connecting spinner on error
+        es.onerror = () => {
             setIsConnecting(false);
-            try { es.close(); } catch (_) {}
+            try {
+                es.close();
+            } catch {}
             if (evtRef.current === es) evtRef.current = null;
             clearInterval(flushInterval);
         };
 
         return () => {
-            try { es.close(); } catch (_) {}
+            try {
+                es.close();
+            } catch {}
             if (evtRef.current === es) evtRef.current = null;
             clearInterval(flushInterval);
         };
     }, [url, maxLines]);
 
+    /* ------------------- RENDER ---------------------- */
+
     let prevTimestamp = 0;
 
     return (
-        <div style={{ height: 750, border: "1px solid #ccc", borderRadius: 4, overflow: "hidden", position: "relative" }}>
-            {isConnecting ? (
-                <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.4)", zIndex: 50 }}>
-                    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
-                        <Spinner className="h-8 w-8 text-white" />
-                        <div style={{ color: "#fff", fontSize: 12 }}>Reconnecting...</div>
-                    </div>
+        <div className="flex h-[750px] w-full border rounded overflow-hidden">
+            {/* LEFT: SEARCH PANEL */}
+            <div className="w-80 border-r bg-muted/10 flex flex-col p-2">
+                <Input
+                    placeholder="Search (min 2 chars)…"
+                    onChange={(e) => debouncedSetSearch(e.target.value)}
+                    className="mb-2"
+                />
+
+                {/* simple, reliable scroll container */}
+                <div className="flex-1 overflow-auto rounded border bg-background p-1">
+                    {search.length < 2 && (
+                        <div className="text-sm text-muted-foreground px-2 py-1">
+                            Type at least 2 characters…
+                        </div>
+                    )}
+
+                    {search.length >= 2 && isSearching && (
+                        <div className="text-sm text-muted-foreground px-2 py-1">
+                            Searching…
+                        </div>
+                    )}
+
+                    {search.length >= 2 && !isSearching && searchResults.length === 0 && (
+                        <div className="text-sm text-muted-foreground px-2 py-1">
+                            No matches found
+                        </div>
+                    )}
+
+                    {/* show truncated notice if we reached the hard limit */}
+                    {searchResults.length > 0 && (
+                        <div className="text-xs text-muted-foreground px-2 pb-2">
+                            Showing {searchResults.length} result{searchResults.length > 1 ? "s" : ""}{/* if truncated you'd show " (first N shown)" */}
+                        </div>
+                    )}
+
+                    {searchResults.map((entry) => (
+                        <div
+                            key={entry.line}
+                            onClick={() => jumpToLine(entry.line)}
+                            className="px-2 py-1 text-sm font-mono rounded cursor-pointer hover:bg-accent"
+                        >
+                            <span className="font-bold mr-2 text-primary">
+                                #{entry.line + 1}
+                            </span>
+                            {entry.text}
+                        </div>
+                    ))}
                 </div>
-            ) : (
+            </div>
+
+            {/* RIGHT: MAIN LOG VIEWER */}
+            <div className="flex-1 relative">
+                {isConnecting && (
+                    <div className="absolute inset-0 flex items-center justify-center bg-black/40 z-50">
+                        <Spinner className="h-8 w-8 text-white" />
+                    </div>
+                )}
+
                 <Virtuoso
+                    ref={virtuosoRef}
                     style={{ height: "100%", background: "#1e1e1e", color: "white" }}
                     data={linesRef.current}
                     followOutput={isFollowing ? "smooth" : false}
                     atBottomStateChange={(atBottom) => setIsFollowing(atBottom)}
                     itemContent={(index, line) => {
-                        // Timestamp
+                        // timestamp parsing
                         const tsMatch = line.match(/^\[(.*?)\]/);
                         let timestampStr = "";
                         let deltaStr = "";
@@ -121,18 +278,17 @@ export const LogViewer: React.FC<LogViewerProps> = ({ url, maxLines = 2000, show
                             timestampStr = tsMatch[0];
                             const currentTs = new Date(tsMatch[1]).getTime();
                             if (showDelta && prevTimestamp !== 0) {
-                                const delta = currentTs - prevTimestamp;
-                                deltaStr = formatDelta(delta);
+                                deltaStr = formatDelta(currentTs - prevTimestamp);
                             }
                             prevTimestamp = currentTs;
                         }
 
-                        // Log level coloring
-
-                        const levelMatch = line.match(/\[(TRACE|DEBUG|INFO|WARN|ERROR)\]/);
+                        // Log level
+                        const levelMatch = line.match(
+                            /\[(TRACE|DEBUG|INFO|WARN|ERROR)\]/
+                        );
                         const level = levelMatch ? levelMatch[1] : null;
 
-                        // Split line for display
                         let beforeLevel = line;
                         let afterLevel = "";
                         if (levelMatch) {
@@ -142,17 +298,22 @@ export const LogViewer: React.FC<LogViewerProps> = ({ url, maxLines = 2000, show
                         }
 
                         return (
-                            <div style={{ fontFamily: "monospace", paddingLeft: 10 }}>
-                                <span style={{ color: "#888" }}>{index + 1}</span>:
+                            <div className="font-mono px-3 py-1 whitespace-pre">
+                                <span className="text-gray-500">{index + 1}</span>:
                                 {timestampStr}{" "}
                                 {deltaStr && (
-                                    <span style={{ color: "#888", fontStyle: "italic", marginLeft: 4 }}>
+                                    <span className="text-gray-500 italic ml-1">
                                         (+{deltaStr})
                                     </span>
                                 )}{" "}
                                 {beforeLevel.replace(timestampStr, "")}
                                 {level && (
-                                    <span style={{ color: colorMap[level], fontWeight: "bold" }}>
+                                    <span
+                                        style={{
+                                            color: colorMap[level],
+                                            fontWeight: "bold",
+                                        }}
+                                    >
                                         [{level}]
                                     </span>
                                 )}
@@ -161,7 +322,7 @@ export const LogViewer: React.FC<LogViewerProps> = ({ url, maxLines = 2000, show
                         );
                     }}
                 />
-            )}
+            </div>
         </div>
     );
 };
