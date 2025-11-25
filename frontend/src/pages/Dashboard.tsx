@@ -70,12 +70,12 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
                 <CardContent className="pl-2">
                     <div className="flex gap-8 items-start">
                         <div className="flex items-center gap-4">
-                            <span className="w-40 text-sm font-medium">Levels ({selectedLevels.length} selected)</span>
+                            <span className="w-40 text-sm font-medium">Levels</span>
                             <SearchableMultiSelect options={levelOptions} selected={selectedLevels} onChange={setSelectedLevels} />
                         </div>
 
                         <div className="flex items-center gap-4">
-                            <span className="w-40 text-sm font-medium">Domains ({selectedDomains.length} selected)</span>
+                            <span className="w-40 text-sm font-medium">Domains</span>
                             <SearchableMultiSelect options={domainOptions} selected={selectedDomains} onChange={setSelectedDomains} />
                         </div>
 
