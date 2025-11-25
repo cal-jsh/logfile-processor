@@ -68,24 +68,21 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
             {/* Filters - searchable multi-selects for Levels and Domains (single enclosing card, horizontal layout) */}
             <Card className="mb-3">
                 <CardContent className="pl-2">
-                    <div className="flex gap-8 items-start">
-                        <div className="flex items-center gap-4">
-                            <span className="w-40 text-sm font-medium">Levels</span>
+                    <div className="flex justify-between">
+                        <div className="flex items-center">
+                            <span className="text-sm font-medium mr-2">Levels</span>
                             <SearchableMultiSelect options={levelOptions} selected={selectedLevels} onChange={setSelectedLevels} />
                         </div>
 
-                        <div className="flex items-center gap-4">
-                            <span className="w-40 text-sm font-medium">Domains</span>
+                        <div className="flex items-center">
+                            <span className="text-sm font-medium mr-2">Domains</span>
                             <SearchableMultiSelect options={domainOptions} selected={selectedDomains} onChange={setSelectedDomains} />
                         </div>
 
-                        <div className="flex items-start gap-4">
-                            <div className="flex items-center">
-                                <span className="w-40 text-sm font-medium">Keywords ({selectedKeywords.length})</span>
-                            </div>
-
-                            <div className="flex flex-col">
-                                <div className="flex items-center gap-2">
+                        <div className="flex items-center">
+                            <span className="text-sm font-medium mr-2">Keywords</span>  
+                            <div className="flex gap-2">
+                                <div className="flex items-center align-center justify-center gap-2">
                                     <input
                                         value={newKeyword}
                                         onChange={(e) => setNewKeyword(e.target.value)}
@@ -99,7 +96,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
                                             }
                                         }}
                                         placeholder="Add keyword and press Enter"
-                                        className="border rounded px-2 py-1 w-48"
+                                        className="border rounded align-center px-2 py-1 w-48"
                                     />
                                     <button
                                         type="button"
@@ -110,20 +107,20 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
                                                 setNewKeyword("");
                                             }
                                         }}
-                                        className="px-2 py-1 border rounded"
+                                        className="px-2 py-1 align-center border rounded"
                                     >
                                         +
                                     </button>
                                 </div>
 
-                                <div className="flex gap-2 flex-wrap mt-2">
+                                <div className="flex gap-2 flex-wrap justify-center">
                                     {selectedKeywords.map((kw) => (
-                                        <div key={kw} className="inline-flex items-center gap-2 px-2 py-1 bg-gray-100 rounded text-sm">
+                                        <div key={kw} className="inline-flex align-center items-center gap-2 px-2 py-1 bg-gray-100 rounded text-sm">
                                             <span>{kw}</span>
                                             <button
                                                 type="button"
                                                 onClick={() => setSelectedKeywords((s) => s.filter((x) => x !== kw))}
-                                                className="text-xs px-1"
+                                                className="text-xs align-center px-1"
                                             >
                                                 ×
                                             </button>
