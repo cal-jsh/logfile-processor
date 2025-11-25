@@ -9,6 +9,14 @@ export type LogSummary = {
      */
     levels: Record<string, number>;
     /**
+     * Timestamp of the first log entry
+     */
+    start_timestamp?: string | null;
+    /**
+     * Timestamp of the last log entry
+     */
+    stop_timestamp?: string | null;
+    /**
      * Total number of lines in the log
      */
     total_lines: number;
