@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { Virtuoso, VirtuosoHandle } from "react-virtuoso";
-import { Input } from "@/components/ui/input";
+import { Input } from "./ui/input";
+import { Button } from "./ui/button";
 // NOTE: using a plain div for results scrolling; you can swap back to shadcn ScrollArea if you prefer
 import { colorMap } from "../lib/colorMap";
 import { Spinner } from "./ui/spinner";
+import { Download } from "lucide-react";
 
 /* ---------------- debounce helper (no dependency) ---------------- */
 function debounce<T extends (...args: any[]) => void>(fn: T, delay: number) {
@@ -14,11 +16,73 @@ function debounce<T extends (...args: any[]) => void>(fn: T, delay: number) {
     };
 }
 
-/* ----------------- formatDelta ------------------ */
+/* --------- formatDelta --------- */
 function formatDelta(ms: number): string {
     if (ms < 0.001) return `${Math.round(ms * 1_000_000)} µs`;
     else if (ms < 1000) return `${Math.round(ms)} ms`;
     else return `${(ms / 1000).toFixed(2)} s`;
+}
+
+/* --------- Download helpers --------- */
+function downloadAsText(lines: string[]) {
+    const content = lines.join("\n");
+    const blob = new Blob([content], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `logs_${new Date().toISOString().slice(0, 10)}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+}
+
+function downloadAsCSV(lines: string[]) {
+    const csvRows = ["Timestamp,Level,Domain,Message"];
+    
+    for (const line of lines) {
+        // Pattern: [timestamp] [level] domain message
+        // Or: [timestamp] [level] [domain] message
+        const match = line.match(/^\[(.*?)\]\s+\[(.*?)\]\s+(.*)$/);
+        
+        let timestamp = "";
+        let level = "";
+        let domain = "";
+        let message = "";
+        
+        if (match) {
+            timestamp = match[1];
+            level = match[2];
+            const rest = match[3];
+            
+            // Try to extract domain from rest: either [domain] message or domain message
+            const domainMatch = rest.match(/^(?:\[(.*?)\]|(\S+))\s+(.*)$/);
+            if (domainMatch) {
+                domain = domainMatch[1] || domainMatch[2] || "";
+                message = domainMatch[3] || "";
+            } else {
+                message = rest;
+            }
+        } else {
+            // Fallback: just use the whole line as message
+            message = line;
+        }
+        
+        // CSV escape: quote the message field
+        const escapedMessage = `"${message.replace(/"/g, '\\"')}"`;
+        csvRows.push(`${timestamp},${level},${domain},${escapedMessage}`);
+    }
+    
+    const content = csvRows.join("\n");
+    const blob = new Blob([content], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `logs_${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
 }
 
 interface LogViewerProps {
@@ -205,11 +269,37 @@ export const LogViewer: React.FC<LogViewerProps> = ({
 
     return (
         <div className="flex h-[750px] w-full border rounded overflow-hidden">
+
+
             {/* LEFT: SEARCH PANEL */}
             <div className="w-80 border-r bg-muted/10 flex flex-col p-2">
+                {/* Download Buttons */}
+                <div className="flex gap-2 mb-2">
+                    <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => downloadAsText(linesRef.current)}
+                        disabled={linesRef.current.length === 0}
+                        title="Download filtered logs as text file"
+                    >
+                        <Download className="w-4 h-4 mr-1" />
+                        Text
+                    </Button>
+                    <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => downloadAsCSV(linesRef.current)}
+                        disabled={linesRef.current.length === 0}
+                        title="Download filtered logs as CSV file"
+                    >
+                        <Download className="w-4 h-4 mr-1" />
+                        CSV
+                    </Button>
+                </div>
+
                 <Input
                     placeholder="Search (min 2 chars)…"
-                    onChange={(e) => debouncedSetSearch(e.target.value)}
+                    onChange={(e: React.ChangeEvent<HTMLInputElement>) => debouncedSetSearch(e.target.value)}
                     className="mb-2"
                 />
 
