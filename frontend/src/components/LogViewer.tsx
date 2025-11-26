@@ -39,22 +39,22 @@ function downloadAsText(lines: string[]) {
 
 function downloadAsCSV(lines: string[]) {
     const csvRows = ["Timestamp,Level,Domain,Message"];
-    
+
     for (const line of lines) {
         // Pattern: [timestamp] [level] domain message
         // Or: [timestamp] [level] [domain] message
         const match = line.match(/^\[(.*?)\]\s+\[(.*?)\]\s+(.*)$/);
-        
+
         let timestamp = "";
         let level = "";
         let domain = "";
         let message = "";
-        
+
         if (match) {
             timestamp = match[1];
             level = match[2];
             const rest = match[3];
-            
+
             // Try to extract domain from rest: either [domain] message or domain message
             const domainMatch = rest.match(/^(?:\[(.*?)\]|(\S+))\s+(.*)$/);
             if (domainMatch) {
@@ -67,12 +67,12 @@ function downloadAsCSV(lines: string[]) {
             // Fallback: just use the whole line as message
             message = line;
         }
-        
+
         // CSV escape: quote the message field
         const escapedMessage = `"${message.replace(/"/g, '\\"')}"`;
         csvRows.push(`${timestamp},${level},${domain},${escapedMessage}`);
     }
-    
+
     const content = csvRows.join("\n");
     const blob = new Blob([content], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
@@ -214,7 +214,7 @@ export const LogViewer: React.FC<LogViewerProps> = ({
         if (evtRef.current) {
             try {
                 evtRef.current.close();
-            } catch {}
+            } catch { }
             evtRef.current = null;
         }
 
@@ -249,7 +249,7 @@ export const LogViewer: React.FC<LogViewerProps> = ({
             setIsConnecting(false);
             try {
                 es.close();
-            } catch {}
+            } catch { }
             if (evtRef.current === es) evtRef.current = null;
             clearInterval(flushInterval);
         };
@@ -257,7 +257,7 @@ export const LogViewer: React.FC<LogViewerProps> = ({
         return () => {
             try {
                 es.close();
-            } catch {}
+            } catch { }
             if (evtRef.current === es) evtRef.current = null;
             clearInterval(flushInterval);
         };
@@ -307,7 +307,6 @@ export const LogViewer: React.FC<LogViewerProps> = ({
                 <div className="flex-1 overflow-auto rounded border bg-background p-1">
                     {search.length < 2 && (
                         <div className="text-sm text-muted-foreground px-2 py-1">
-                            Type at least 2 characters…
                         </div>
                     )}
 
