@@ -22,9 +22,12 @@ pub fn parse_log(
     let mut total_lines = 0;
     let mut levels = HashMap::new();
     let mut domains = HashSet::new();
+    let mut start_timestamp: Option<String> = None;
+    let mut stop_timestamp: Option<String> = None;
 
     for line in log_text.lines() {
         if let Some(caps) = LOG_REGEX.captures(line) {
+            let ts = &caps["ts"];
             let level = &caps["level"];
             let domain = &caps["domain"];
 
@@ -34,6 +37,12 @@ pub fn parse_log(
                 total_lines += 1;
                 *levels.entry(level.to_string()).or_insert(0) += 1;
                 domains.insert(domain.to_string());
+                
+                // Track first and last timestamp
+                if start_timestamp.is_none() {
+                    start_timestamp = Some(ts.to_string());
+                }
+                stop_timestamp = Some(ts.to_string());
             }
         }
     }
@@ -42,6 +51,8 @@ pub fn parse_log(
         total_lines,
         levels,
         unique_domains: domains.into_iter().collect(),
+        start_timestamp,
+        stop_timestamp,
     }
 }
 

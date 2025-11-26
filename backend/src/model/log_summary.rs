@@ -13,4 +13,8 @@ pub struct LogSummary {
     pub levels: HashMap<String, usize>,
     /// List of unique domains found in the log
     pub unique_domains: Vec<String>,
+    /// Timestamp of the first log entry
+    pub start_timestamp: Option<String>,
+    /// Timestamp of the last log entry
+    pub stop_timestamp: Option<String>,
 }
