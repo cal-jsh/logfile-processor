@@ -14,7 +14,7 @@ use uuid::Uuid;
 // utoipa
 use utoipa::ToSchema;
 // tracing
-use tracing::{trace, debug, info, error};
+use tracing::{debug, error, info, trace};
 // std
 use std::path::PathBuf;
 
@@ -112,7 +112,10 @@ pub async fn upload_handler(mut multipart: Multipart) -> impl IntoResponse {
 
     // Parse the log file to get the summary
     let summary = parse_log(&log_text, None, None);
-    info!("Finished parsing log for session {}. Summary: {:?}", session_id, summary);
+    info!(
+        "Finished parsing log for session {}. Summary: {:?}",
+        session_id, summary
+    );
 
     // Respond with session ID and the actual summary
     Json(UploadResponse {

@@ -11,15 +11,15 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use tokio::fs::File;
-use tokio::time::{interval, Duration};
-use tokio_util::codec::{FramedRead, LinesCodec};
 use futures::{stream, StreamExt};
 use serde::Deserialize;
 use serde_json::json;
-use tracing::{debug, info};
 use std::convert::Infallible;
 use std::pin::Pin;
+use tokio::fs::File;
+use tokio::time::{interval, Duration};
+use tokio_util::codec::{FramedRead, LinesCodec};
+use tracing::{debug, info};
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -57,7 +57,7 @@ pub struct LogFilterQuery {
     ),
     responses(
         (
-            status = 200, 
+            status = 200,
             description = "Stream of filtered log events",
             content_type = "text/event-stream"
         ),
@@ -84,7 +84,10 @@ pub async fn stream_filtered_logs(
     let file = match File::open(file_path).await {
         Ok(f) => f,
         Err(err) => {
-            debug!("Failed to open log file for session {}: {}", &query.session_id, err);
+            debug!(
+                "Failed to open log file for session {}: {}",
+                &query.session_id, err
+            );
             return Sse::new(stream::empty().boxed());
         }
     };
@@ -111,7 +114,11 @@ pub async fn stream_filtered_logs(
 
     // Prev buffer holds up to `context` previous lines (most recent at back)
     let prev_buffer: Arc<Mutex<VecDeque<String>>> =
-        Arc::new(Mutex::new(VecDeque::with_capacity(if context == 0 { 1 } else { context })));
+        Arc::new(Mutex::new(VecDeque::with_capacity(if context == 0 {
+            1
+        } else {
+            context
+        })));
     // future_remaining indicates how many upcoming lines to treat as forward context
     let future_remaining = Arc::new(Mutex::new(0usize));
     // outgoing queue for events produced by processing a single incoming line (keeps order)
@@ -153,9 +160,15 @@ pub async fn stream_filtered_logs(
                 let domain = caps.name("domain").map(|m| m.as_str()).unwrap_or("");
                 let message = caps.name("message").map(|m| m.as_str()).unwrap_or("");
 
-                let level_ok = filter_levels.as_ref().map_or(true, |v| v.iter().any(|s| s == level));
-                let domain_ok = filter_domains.as_ref().map_or(true, |v| v.iter().any(|s| s == domain));
-                let keyword_ok = filter_keywords.as_ref().map_or(true, |v| v.iter().any(|kw| message.contains(kw)));
+                let level_ok = filter_levels
+                    .as_ref()
+                    .map_or(true, |v| v.iter().any(|s| s == level));
+                let domain_ok = filter_domains
+                    .as_ref()
+                    .map_or(true, |v| v.iter().any(|s| s == domain));
+                let keyword_ok = filter_keywords
+                    .as_ref()
+                    .map_or(true, |v| v.iter().any(|kw| message.contains(kw)));
                 matched = level_ok && domain_ok && keyword_ok;
             }
 
@@ -184,7 +197,9 @@ pub async fn stream_filtered_logs(
                 }
 
                 // 2) Emit the matching line itself (context = false)
-                events_to_return.push(json_event(&json!({ "line": line.clone(), "context": false })));
+                events_to_return.push(json_event(
+                    &json!({ "line": line.clone(), "context": false }),
+                ));
 
                 // 3) Set future_remaining = context (so next `context` input lines will be emitted as context)
                 {
@@ -196,7 +211,9 @@ pub async fn stream_filtered_logs(
                 // If we have future_remaining > 0 => this line is forward context
                 let mut fr_lock = future_remaining.lock().await;
                 if *fr_lock > 0 {
-                    events_to_return.push(json_event(&json!({ "line": line.clone(), "context": true })));
+                    events_to_return.push(json_event(
+                        &json!({ "line": line.clone(), "context": true }),
+                    ));
                     *fr_lock -= 1;
                 } else {
                     // Otherwise push into prev_buffer (maintain its max size = context)
@@ -269,10 +286,7 @@ pub async fn stream_filtered_logs(
     });
 
     // Compose final stream
-    let final_stream = file_emits
-        .chain(flush_buffer)
-        .chain(heartbeat)
-        .boxed();
+    let final_stream = file_emits.chain(flush_buffer).chain(heartbeat).boxed();
 
     Sse::new(final_stream)
 }

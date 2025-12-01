@@ -9,8 +9,9 @@ use std::collections::{HashMap, HashSet};
 
 pub static LOG_REGEX: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r"^\[(?P<ts>[^\]]+)\]\s\[(?P<level>[^\]]+)\]\s\[(?P<domain>[^\]]+)\]\s*(?P<message>.*)$"
-    ).unwrap()
+        r"^\[(?P<ts>[^\]]+)\]\s\[(?P<level>[^\]]+)\]\s\[(?P<domain>[^\]]+)\]\s*(?P<message>.*)$",
+    )
+    .unwrap()
 });
 
 /// Parse log text and optionally filter by domains or levels
@@ -31,13 +32,17 @@ pub fn parse_log(
             let level = &caps["level"];
             let domain = &caps["domain"];
 
-            if filter_levels.as_ref().map_or(true, |l| l.contains(&level.to_string())) &&
-               filter_domains.as_ref().map_or(true, |d| d.contains(&domain.to_string()))
+            if filter_levels
+                .as_ref()
+                .map_or(true, |l| l.contains(&level.to_string()))
+                && filter_domains
+                    .as_ref()
+                    .map_or(true, |d| d.contains(&domain.to_string()))
             {
                 total_lines += 1;
                 *levels.entry(level.to_string()).or_insert(0) += 1;
                 domains.insert(domain.to_string());
-                
+
                 // Track first and last timestamp
                 if start_timestamp.is_none() {
                     start_timestamp = Some(ts.to_string());
@@ -55,7 +60,6 @@ pub fn parse_log(
         stop_timestamp,
     }
 }
-
 
 #[cfg(test)]
 mod tests;
