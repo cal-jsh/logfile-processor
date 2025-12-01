@@ -5,6 +5,7 @@ import SearchableMultiSelect from "../components/SearchableMultiSelect";
 import { Card, CardContent } from "../components/ui/card";
 import LogSummaryCard from "../components/LogSummaryCard";
 import LogViewerOptionsCard from "../components/LogViewerOptionsCard";
+import { Input } from "../components/ui/input";
 
 interface DashboardProps {
     sessionId: string;
@@ -17,13 +18,16 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
     const [selectedDomains, setSelectedDomains] = useState<string[]>([]);
     const [selectedKeywords, setSelectedKeywords] = useState<string[]>([]);
     const [newKeyword, setNewKeyword] = useState<string>("");
+
+    const [contextLines, setContextLines] = useState<number>(0);
+
     const [debouncedLevels, setDebouncedLevels] = useState<string>("");
     const [debouncedDomains, setDebouncedDomains] = useState<string>("");
     const [debouncedKeywords, setDebouncedKeywords] = useState<string>("");
 
     const [showDelta, setShowDelta] = useState(false); // controls delta display
 
-    // Debounce changes to selected arrays before updating query params
+    // Debounce filters
     useEffect(() => {
         const timer = setTimeout(() => {
             setDebouncedLevels(selectedLevels.join(","));
@@ -39,8 +43,14 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
     const levelsParam = debouncedLevels ? `&levels=${encodeURIComponent(debouncedLevels)}` : "";
     const domainsParam = debouncedDomains ? `&domains=${encodeURIComponent(debouncedDomains)}` : "";
     const keywordsParam = debouncedKeywords ? `&keywords=${encodeURIComponent(debouncedKeywords)}` : "";
-    const logUrl = `${baseUrl}/stream_logs?session_id=${sessionId}${levelsParam}${domainsParam}${keywordsParam}`;
+    const contextParam = contextLines > 0 ? `&context=${contextLines}` : "";
 
+    const logUrl =
+        `${baseUrl}/stream_logs?` +
+        `session_id=${encodeURIComponent(sessionId)}` +
+        `${levelsParam}${domainsParam}${keywordsParam}${contextParam}`;
+
+    // Cleanup session on exit
     useEffect(() => {
         const cleanupSession = () => {
             const url = `${baseUrl}/close_session?session_id=${encodeURIComponent(sessionId)}`;
@@ -62,27 +72,41 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
                 <LogSummaryCard summary={summary} />
             </div>
 
-            {/* Show delta options card */}
+            {/* Delta options card */}
             <LogViewerOptionsCard showDelta={showDelta} setShowDelta={setShowDelta} />
 
-            {/* Filters - searchable multi-selects for Levels and Domains (single enclosing card, horizontal layout) */}
+            {/* Filter bar */}
             <Card className="mb-3">
                 <CardContent className="pl-2">
-                    <div className="flex justify-between">
+                    <div className="flex justify-between gap-4 flex-wrap">
+
+                        {/* Levels */}
                         <div className="flex items-center">
                             <span className="text-sm font-medium mr-2">Levels</span>
-                            <SearchableMultiSelect options={levelOptions} selected={selectedLevels} onChange={setSelectedLevels} />
+                            <SearchableMultiSelect
+                                options={levelOptions}
+                                selected={selectedLevels}
+                                onChange={setSelectedLevels}
+                            />
                         </div>
 
+                        {/* Domains */}
                         <div className="flex items-center">
                             <span className="text-sm font-medium mr-2">Domains</span>
-                            <SearchableMultiSelect options={domainOptions} selected={selectedDomains} onChange={setSelectedDomains} />
+                            <SearchableMultiSelect
+                                options={domainOptions}
+                                selected={selectedDomains}
+                                onChange={setSelectedDomains}
+                            />
                         </div>
 
+                        {/* Keywords */}
                         <div className="flex items-center">
-                            <span className="text-sm font-medium mr-2">Keywords</span>  
-                            <div className="flex gap-2">
-                                <div className="flex items-center align-center justify-center gap-2">
+                            <span className="text-sm font-medium mr-2">Keywords</span>
+                            <div className="flex flex-col gap-2">
+
+                                {/* Keyword entry */}
+                                <div className="flex gap-2 items-center">
                                     <input
                                         value={newKeyword}
                                         onChange={(e) => setNewKeyword(e.target.value)}
@@ -96,7 +120,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
                                             }
                                         }}
                                         placeholder="Add keyword and press Enter"
-                                        className="border rounded align-center px-2 py-1 w-48"
+                                        className="border rounded px-2 py-1 w-48"
                                     />
                                     <button
                                         type="button"
@@ -107,20 +131,28 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
                                                 setNewKeyword("");
                                             }
                                         }}
-                                        className="px-2 py-1 align-center border rounded"
+                                        className="px-2 py-1 border rounded"
                                     >
                                         +
                                     </button>
                                 </div>
 
-                                <div className="flex gap-2 flex-wrap justify-center">
+                                {/* Chips */}
+                                <div className="flex gap-2 flex-wrap">
                                     {selectedKeywords.map((kw) => (
-                                        <div key={kw} className="inline-flex align-center items-center gap-2 px-2 py-1 bg-gray-100 rounded text-sm">
+                                        <div
+                                            key={kw}
+                                            className="inline-flex items-center gap-2 px-2 py-1 bg-gray-100 rounded text-sm"
+                                        >
                                             <span>{kw}</span>
                                             <button
                                                 type="button"
-                                                onClick={() => setSelectedKeywords((s) => s.filter((x) => x !== kw))}
-                                                className="text-xs align-center px-1"
+                                                onClick={() =>
+                                                    setSelectedKeywords((s) =>
+                                                        s.filter((x) => x !== kw)
+                                                    )
+                                                }
+                                                className="text-xs px-1"
                                             >
                                                 ×
                                             </button>
@@ -128,12 +160,28 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
                                     ))}
                                 </div>
 
-                                <div className="border-t border-gray-200 my-2" />
-
-                                <div>
-                                    <button type="button" onClick={() => setSelectedKeywords([])} className="px-2 py-1 border rounded">Clear all</button>
-                                </div>
+                                {/* Clear all */}
+                                <button
+                                    type="button"
+                                    onClick={() => setSelectedKeywords([])}
+                                    className="px-2 py-1 border rounded w-fit"
+                                >
+                                    Clear all
+                                </button>
                             </div>
+                        </div>
+
+                        {/* Context Lines Input */}
+                        <div className="flex items-center">
+                            <span className="text-sm font-medium mr-2">Context</span>
+                            <Input
+                                type="number"
+                                min={0}
+                                value={contextLines}
+                                onChange={(e) => setContextLines(parseInt(e.target.value) || 0)}
+                                className="w-20"
+                                placeholder="0"
+                            />
                         </div>
                     </div>
                 </CardContent>
