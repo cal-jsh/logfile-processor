@@ -6,14 +6,19 @@ use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-static LOG_STORAGE: Lazy<Mutex<HashMap<String, String>>> =
-    Lazy::new(|| Mutex::new(HashMap::new()));
+static LOG_STORAGE: Lazy<Mutex<HashMap<String, String>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
 /// Save a user's log path
 pub fn save_user_log(session_id: &str, file_path: String) {
-    LOG_STORAGE.lock().unwrap().insert(session_id.to_string(), file_path.clone());
+    LOG_STORAGE
+        .lock()
+        .unwrap()
+        .insert(session_id.to_string(), file_path.clone());
     info!("Saved log for session_id: {}", session_id);
-    info!("Currently {} log files stored", LOG_STORAGE.lock().unwrap().len());
+    info!(
+        "Currently {} log files stored",
+        LOG_STORAGE.lock().unwrap().len()
+    );
 }
 
 /// Retrieve a user's log path
@@ -28,5 +33,8 @@ pub fn remove_user_log(session_id: &str) {
         let _ = std::fs::remove_file(path);
     }
     info!("Removed log for session_id: {}", session_id);
-    info!("Currently {} log files stored", LOG_STORAGE.lock().unwrap().len());
+    info!(
+        "Currently {} log files stored",
+        LOG_STORAGE.lock().unwrap().len()
+    );
 }

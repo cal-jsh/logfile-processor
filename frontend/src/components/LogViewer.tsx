@@ -6,6 +6,14 @@ import { colorMap } from "../lib/colorMap";
 import { Spinner } from "./ui/spinner";
 import { Download } from "lucide-react";
 
+function extractMessage(raw: string) {
+  return raw
+    .replace(/^\[[^\]]+\]\s*/, "")                       // strip timestamp
+    .replace(/^\[(TRACE|DEBUG|INFO|WARN|ERROR)\]\s*/, "") // strip level
+    .replace(/^\[[^\]]+\]\s*/, "")                       // strip domain
+    .trim();
+}
+
 /* ---------------- debounce helper ---------------- */
 function debounce<T extends (...args: any[]) => void>(fn: T, delay: number) {
   let timer: number;
@@ -275,7 +283,7 @@ export const LogViewer = ({
     if (evtRef.current) {
       try {
         evtRef.current.close();
-      } catch {}
+      } catch { }
       evtRef.current = null;
     }
 
@@ -315,14 +323,14 @@ export const LogViewer = ({
       clearInterval(flush);
       try {
         es.close();
-      } catch {}
+      } catch { }
     };
 
     return () => {
       clearInterval(flush);
       try {
         es.close();
-      } catch {}
+      } catch { }
     };
   }, [url, maxLines]);
 
@@ -442,7 +450,9 @@ export const LogViewer = ({
                   </span>
                 )}{" "}
                 {log.domain && <span className="text-blue-400">[{log.domain}]</span>}{" "}
-                <span className={`${log.matched ? "" : ""}`}>{log.line}</span>
+                <span className={`${log.matched ? "" : ""}`}>
+                  {extractMessage(log.line)}
+                </span>
               </div>
             );
           }}

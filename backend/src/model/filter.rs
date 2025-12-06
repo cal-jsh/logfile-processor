@@ -10,10 +10,10 @@ use utoipa::ToSchema;
 pub struct FilterRequest {
     /// Full log text
     pub log_text: String,
-    
+
     /// Optional list of domains to filter by
     pub domains: Option<Vec<String>>,
-    
+
     /// Optional list of log levels to filter by
     pub levels: Option<Vec<String>>,
 }

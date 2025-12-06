@@ -36,23 +36,26 @@ const buttonVariants = cva(
   }
 )
 
-// ✅ Forward the ref here
 const Button = React.forwardRef<
   HTMLButtonElement,
   React.ComponentProps<"button"> &
-    VariantProps<typeof buttonVariants> & { asChild?: boolean }
->(({ className, variant, size, asChild = false, ...props }, ref) => {
+    VariantProps<typeof buttonVariants> & {
+      asChild?: boolean
+    }
+>(function Button(
+  { className, variant, size, asChild = false, ...props },
+  ref
+) {
   const Comp = asChild ? Slot : "button"
+
   return (
     <Comp
-      ref={ref} // <-- THIS is required for PopoverTrigger
+      ref={ref}                     // <-- important!
       data-slot="button"
       className={cn(buttonVariants({ variant, size, className }))}
       {...props}
     />
   )
 })
-
-Button.displayName = "Button"
 
 export { Button, buttonVariants }

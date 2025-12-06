@@ -28,7 +28,10 @@ fn test_parse_no_filters_returns_all_lines() {
     assert_eq!(summary.levels, expected_levels);
 
     let domains_set: HashSet<_> = summary.unique_domains.into_iter().collect();
-    let expected_domains: HashSet<String> = ["core", "network", "data_acq"].iter().map(|s| s.to_string()).collect();
+    let expected_domains: HashSet<String> = ["core", "network", "data_acq"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
     assert_eq!(domains_set, expected_domains);
 }
 
