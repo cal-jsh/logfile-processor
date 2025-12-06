@@ -3,7 +3,8 @@ import { LogViewer } from "../components/LogViewer";
 import type { LogSummary } from "../../openapi/client/models/LogSummary";
 import SearchableMultiSelect from "../components/SearchableMultiSelect";
 import { Card, CardContent } from "../components/ui/card";
-import LogSummaryCard from "../components/LogSummaryCard";
+import LogSummarySidebar from "../components/LogSummarySidebar";
+import { SidebarProvider, SidebarInset } from "../components/ui/sidebar";
 import LogViewerOptionsCard from "../components/LogViewerOptionsCard";
 import { Input } from "../components/ui/input";
 
@@ -67,16 +68,16 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
     }, [sessionId, baseUrl]);
 
     return (
-        <div style={{ padding: "20px" }}>
-            <div style={{ marginBottom: 12 }}>
-                <LogSummaryCard summary={summary} />
-            </div>
+        <SidebarProvider defaultOpen={true}>
+            <LogSummarySidebar summary={summary} />
 
-            {/* Delta options card */}
-            <LogViewerOptionsCard showDelta={showDelta} setShowDelta={setShowDelta} />
+            <SidebarInset>
+                <div style={{ padding: "20px" }}>
+                {/* Delta options card */}
+                <LogViewerOptionsCard showDelta={showDelta} setShowDelta={setShowDelta} />
 
-            {/* Filter bar */}
-            <Card className="mb-3">
+                {/* Filter bar */}
+                <Card className="mb-3">
                 <CardContent className="pl-2">
                     <div className="flex justify-between gap-4 flex-wrap">
 
@@ -184,11 +185,13 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
                             />
                         </div>
                     </div>
-                </CardContent>
-            </Card>
+                    </CardContent>
+                </Card>
 
-            {/* LogViewer */}
-            <LogViewer url={logUrl} maxLines={100000} showDelta={showDelta} />
-        </div>
+                    {/* LogViewer */}
+                    <LogViewer url={logUrl} maxLines={100000} showDelta={showDelta} />
+                    </div>
+                </SidebarInset>
+            </SidebarProvider>
     );
 };
