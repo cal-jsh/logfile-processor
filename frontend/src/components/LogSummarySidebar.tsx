@@ -8,6 +8,7 @@ import {
   SidebarGroupLabel,
   SidebarGroupContent,
   SidebarTrigger,
+  useSidebar,
 } from "./ui/sidebar";
 import { Badge } from "./ui/badge";
 import { colorMap, LEVEL_ORDER } from "../lib/colorMap";
@@ -35,69 +36,71 @@ function calculateDuration(startStr: string | undefined | null, stopStr: string 
 
 export default function LogSummarySidebar({ summary }: Props) {
   const duration = calculateDuration(summary.start_timestamp, summary.stop_timestamp);
+  // read sidebar open state so we can hide content when collapsed
+  const { open } = useSidebar();
 
   return (
     <Sidebar side="left" collapsible="icon" variant="sidebar">
       <SidebarHeader>
         <div className="flex items-center justify-between w-full">
-          <div className="text-sm font-semibold">Logfile Summary</div>
+          {open ? <div className="text-sm font-semibold">Logfile Summary</div> : null}
           <SidebarTrigger />
         </div>
       </SidebarHeader>
 
-      <SidebarContent>
-        <SidebarGroup>
-          <SidebarGroupLabel>Total lines</SidebarGroupLabel>
-          <SidebarGroupContent>
-            <div className="font-mono">{summary.total_lines.toLocaleString()}</div>
-          </SidebarGroupContent>
-        </SidebarGroup>
+      {open && (
+        <SidebarContent>
+          <SidebarGroup>
+            <SidebarGroupLabel>Total lines</SidebarGroupLabel>
+            <SidebarGroupContent>
+              <div className="font-mono">{summary.total_lines.toLocaleString()}</div>
+            </SidebarGroupContent>
+          </SidebarGroup>
 
-        <SidebarGroup>
-          <SidebarGroupLabel>Time Range</SidebarGroupLabel>
-          <SidebarGroupContent>
-            {summary.start_timestamp && (
-              <div className="mb-2">
-                <div className="text-muted-foreground text-xs">Start</div>
-                <div className="font-mono text-xs bg-muted px-2 py-1 rounded inline-block">{summary.start_timestamp}</div>
-              </div>
-            )}
-            {summary.stop_timestamp && (
-              <div className="mb-2">
-                <div className="text-muted-foreground text-xs">Stop</div>
-                <div className="font-mono text-xs bg-muted px-2 py-1 rounded inline-block">{summary.stop_timestamp}</div>
-              </div>
-            )}
-            {duration && (
-              <div>
-                <div className="text-muted-foreground text-xs">Duration</div>
-                <div className="font-mono text-xs bg-muted px-2 py-1 rounded inline-block font-semibold">{duration}</div>
-              </div>
-            )}
-          </SidebarGroupContent>
-        </SidebarGroup>
+          <SidebarGroup>
+            <SidebarGroupLabel>Time Range</SidebarGroupLabel>
+            <SidebarGroupContent>
+              {summary.start_timestamp && (
+                <div className="mb-2">
+                  <div className="text-muted-foreground text-xs">Start</div>
+                  <div className="font-mono text-xs bg-muted px-2 py-1 rounded inline-block">{summary.start_timestamp}</div>
+                </div>
+              )}
+              {summary.stop_timestamp && (
+                <div className="mb-2">
+                  <div className="text-muted-foreground text-xs">Stop</div>
+                  <div className="font-mono text-xs bg-muted px-2 py-1 rounded inline-block">{summary.stop_timestamp}</div>
+                </div>
+              )}
+              {duration && (
+                <div>
+                  <div className="text-muted-foreground text-xs">Duration</div>
+                  <div className="font-mono text-xs bg-muted px-2 py-1 rounded inline-block font-semibold">{duration}</div>
+                </div>
+              )}
+            </SidebarGroupContent>
+          </SidebarGroup>
 
-        <SidebarGroup>
-          <SidebarGroupLabel>Levels</SidebarGroupLabel>
-          <SidebarGroupContent>
-            <div className="flex flex-col gap-2">
-              {LEVEL_ORDER.map((level) => {
-                const count = summary.levels?.[level] ?? 0;
-                return (
-                  <div key={level} className="flex items-center gap-2">
-                    <span className="text-muted-foreground text-sm w-12 font-medium">{level}</span>
-                    <Badge className="h-5 min-w-5 rounded-full px-2 font-mono tabular-nums" style={{ color: colorMap[level] }} variant="outline">
-                      {count}
-                    </Badge>
-                  </div>
-                );
-              })}
-            </div>
-          </SidebarGroupContent>
-        </SidebarGroup>
-
-        
-      </SidebarContent>
+          <SidebarGroup>
+            <SidebarGroupLabel>Levels</SidebarGroupLabel>
+            <SidebarGroupContent>
+              <div className="flex flex-col gap-2">
+                {LEVEL_ORDER.map((level) => {
+                  const count = summary.levels?.[level] ?? 0;
+                  return (
+                    <div key={level} className="flex items-center gap-2">
+                      <span className="text-muted-foreground text-sm w-12 font-medium">{level}</span>
+                      <Badge className="h-5 min-w-5 rounded-full px-2 font-mono tabular-nums" style={{ color: colorMap[level] }} variant="outline">
+                        {count}
+                      </Badge>
+                    </div>
+                  );
+                })}
+              </div>
+            </SidebarGroupContent>
+          </SidebarGroup>
+        </SidebarContent>
+      )}
     </Sidebar>
   );
 }
