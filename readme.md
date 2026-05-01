@@ -6,3 +6,8 @@ Allows to search, filter and analyze log messages in the form of
 [2025-11-17 12:50:03.763190172] [WARN] [network] Process completed successfully
 [2025-11-17 12:50:04.153136172] [INFO] [core] Starting process
 ```
+
+## Example
+
+![Logfile Processor Example](./docs/example.png)
+
