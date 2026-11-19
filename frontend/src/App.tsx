@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { OpenAPI } from "../openapi/client/core/OpenAPI";
 import { request as __request } from "../openapi/client/core/request";
 import type { LogSummary } from "../openapi/client/models/LogSummary";
@@ -31,6 +31,9 @@ export default function App() {
     const [sessionId, setSessionId] = useState<string | null>(null);
     const [filePath, setFilePath] = useState<string | null>(null);
     const [busy, setBusy] = useState(false);
+    // Read by the drop handler, which outlives renders
+    const current = useRef<{ baseUrl: string | null; sessionId: string | null }>({ baseUrl: null, sessionId: null });
+    current.current = { baseUrl, sessionId };
 
     // Web: the standalone backend. Desktop: the in-process API on a random port.
     useEffect(() => {
@@ -44,6 +47,11 @@ export default function App() {
 
     const showOpened = (opened: OpenedLog) => {
         console.log("Opened log:", opened);
+        // Replacing an open file (dropped onto the window): release the old one
+        const { baseUrl: base, sessionId: old } = current.current;
+        if (base && old && old !== opened.session_id) {
+            fetch(`${base}/close_session?session_id=${encodeURIComponent(old)}`, { method: "POST" }).catch(() => {});
+        }
         setSessionId(opened.session_id);
         setSummary(opened.summary);
         setFilePath(opened.path ?? null);
@@ -81,24 +89,28 @@ export default function App() {
             const opened = await open();
             if (opened) showOpened(opened);
         } catch (err: any) {
-            setError(String(err));
+            // The start page shows errors inline; over an open file, keep it and say so
+            if (current.current.sessionId) window.alert(String(err));
+            else setError(String(err));
             console.error(err);
         } finally {
             setBusy(false);
         }
     }, []);
 
-    // A file passed on the command line ("Open with")
+    // A file passed on the command line, or dropped onto the exe icon
     useEffect(() => {
         if (!isDesktop) return;
-        initialFile().then((p) => {
-            if (p) openWith(() => openLogPath(p));
-        });
+        initialFile()
+            .then((p) => {
+                if (p) openWith(() => openLogPath(p));
+            })
+            .catch((e) => setError(String(e)));
     }, [openWith]);
 
-    // Drag and drop a file onto the window
+    // Drag and drop a file onto the window, also while one is open (it is replaced)
     useEffect(() => {
-        if (!isDesktop || sessionId) return;
+        if (!isDesktop) return;
         let unlisten: (() => void) | undefined;
         let cancelled = false;
         import("@tauri-apps/api/webview").then(({ getCurrentWebview }) =>
@@ -115,7 +127,7 @@ export default function App() {
             cancelled = true;
             unlisten?.();
         };
-    }, [openWith, sessionId]);
+    }, [openWith]);
 
     /** Close the current file and go back to the start page. */
     const closeFile = () => {

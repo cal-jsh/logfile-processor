@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    logfile_processor_desktop_lib::run()
+    std::process::exit(logfile_processor_desktop_lib::start())
 }

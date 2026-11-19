@@ -6,10 +6,14 @@
 //! memory-mapped in place. Nothing is uploaded or copied, and the file is never
 //! deleted when the session closes.
 
+pub mod cli;
+
+use cli::Cli;
 use logfile_processor::api::view;
 use logfile_processor::model::upload_response::UploadResponse;
 use serde::Serialize;
 use std::path::PathBuf;
+use std::sync::Mutex;
 use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
 
@@ -96,14 +100,15 @@ async fn export_view(
     Ok(Some(path.to_string_lossy().into_owned()))
 }
 
-/// A file passed on the command line (e.g. "Open with"), opened on start.
+/// The file from the command line (or dropped onto the exe icon), already checked:
+/// a path to open, or the message saying why it cannot be opened.
+struct InitialFile(Mutex<Option<Result<String, String>>>);
+
+/// The file to open on start, if any. Handed out once, so a reload of the page
+/// (or React running effects twice in dev) does not open it again.
 #[tauri::command]
-fn initial_file() -> Option<String> {
-    std::env::args_os()
-        .skip(1)
-        .map(PathBuf::from)
-        .find(|p| p.is_file())
-        .map(|p| p.to_string_lossy().into_owned())
+fn initial_file(initial: tauri::State<'_, InitialFile>) -> Result<Option<String>, String> {
+    initial.0.lock().unwrap().take().transpose()
 }
 
 async fn open(path: PathBuf) -> Result<Opened, String> {
@@ -116,8 +121,69 @@ async fn open(path: PathBuf) -> Result<Opened, String> {
     .map_err(|e| e.to_string())?
 }
 
+/// Entry point of the exe: handle the command line, then run the window.
+/// Returns the process exit code.
+pub fn start() -> i32 {
+    let mut args = std::env::args_os();
+    let exe = args
+        .next()
+        .map(PathBuf::from)
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| "logfile_processor_desktop.exe".into());
+
+    let files = match cli::parse(args) {
+        Ok(Cli::Help) => {
+            cli::attach_parent_console();
+            print!("{}", cli::usage(&exe));
+            return 0;
+        }
+        Ok(Cli::Version) => {
+            cli::attach_parent_console();
+            println!("Logfile Processor {}", env!("CARGO_PKG_VERSION"));
+            return 0;
+        }
+        Ok(Cli::Open(files)) => files,
+        Err(e) => {
+            if cli::attach_parent_console() {
+                eprintln!("error: {e}");
+                return 2;
+            }
+            run_with(Some(Err(e)));
+            return 0;
+        }
+    };
+
+    let checked: Vec<_> = files.iter().map(|f| cli::check_file(f)).collect();
+    // From a terminal, report bad paths there and stop, like any command line tool.
+    // From Explorer there is no terminal, so the window shows the error instead.
+    if checked.iter().any(|c| c.is_err()) && cli::attach_parent_console() {
+        for e in checked.iter().filter_map(|c| c.as_ref().err()) {
+            eprintln!("error: {e}");
+        }
+        return 1;
+    }
+
+    // One file per window: this process opens the first, a new one each of the rest.
+    let mut checked = checked.into_iter().zip(&files);
+    let first = checked.next().map(|(c, _)| c.map(|p| p.to_string_lossy().into_owned()));
+    if let Ok(me) = std::env::current_exe() {
+        for (c, original) in checked {
+            let path = c.unwrap_or_else(|_| original.clone());
+            if let Err(e) = std::process::Command::new(&me).arg("--").arg(&path).spawn() {
+                tracing::error!("Could not start a window for {}: {}", path.display(), e);
+            }
+        }
+    }
+    run_with(first);
+    0
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    run_with(None)
+}
+
+fn run_with(initial: Option<Result<String, String>>) {
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::INFO)
         .with_target(false)
@@ -132,6 +198,7 @@ pub fn run() {
             let base = format!("http://{}", listener.local_addr()?);
             tracing::info!("Desktop API listening on {}", base);
             app.manage(ApiBase(base));
+            app.manage(InitialFile(Mutex::new(initial)));
 
             tauri::async_runtime::spawn(async move {
                 let listener = tokio::net::TcpListener::from_std(listener)
