@@ -41,9 +41,10 @@ function downloadAsText(lines: NormalizedLog[]) {
 }
 
 function downloadAsCSV(lines: NormalizedLog[]) {
-  const header = "Timestamp,Level,Domain,Matched,Context,Message";
+  const header = "Line,Timestamp,Level,Domain,Matched,Context,Message";
   const rows = lines.map((l) =>
     [
+      l.idx + 1,
       l.timestamp ?? "",
       l.level ?? "",
       l.domain ?? "",
@@ -64,9 +65,16 @@ function downloadAsCSV(lines: NormalizedLog[]) {
 /* ---------------- Types ---------------- */
 type IncomingEvent = any; // whatever the backend sends (be permissive)
 
+/** Final event of a result stream, sent by the backend after the last line. */
+type StreamEnd = {
+  emitted: number;
+  maxLines: number;
+  truncated: boolean;
+};
+
 type NormalizedLog = {
   line: string; // rendered line text
-  idx: number; // absolute index (server-provided or local)
+  idx: number; // 0-based line index in the original file (server-provided), or local fallback
   context: boolean;
   matched: boolean;
   timestamp?: string;
@@ -92,6 +100,7 @@ export const LogViewer = ({
   const [, forceRender] = useState(0);
   const [isConnecting, setIsConnecting] = useState(false);
   const [isFollowing, setIsFollowing] = useState(true);
+  const [streamEnd, setStreamEnd] = useState<StreamEnd | null>(null);
 
   /* ---------------- Search ---------------- */
   const [search, setSearch] = useState("");
@@ -136,9 +145,12 @@ export const LogViewer = ({
       return null;
     }
 
-    // idx: prefer provided, otherwise assign monotonic local index
+    // idx: prefer the server's 1-based line_number (real position in the file),
+    // then a provided idx, otherwise assign monotonic local index
     let idx: number;
-    if (typeof obj.idx === "number" && Number.isFinite(obj.idx)) {
+    if (typeof obj.line_number === "number" && Number.isFinite(obj.line_number)) {
+      idx = obj.line_number - 1;
+    } else if (typeof obj.idx === "number" && Number.isFinite(obj.idx)) {
       idx = obj.idx;
       // Also keep nextIdxRef ahead of server idx to avoid collisions
       if (idx >= nextIdxRef.current) nextIdxRef.current = idx + 1;
@@ -272,6 +284,7 @@ export const LogViewer = ({
       linesRef.current = [];
       bufferRef.current = [];
       nextIdxRef.current = 0;
+      setStreamEnd(null);
       setIsConnecting(true);
       forceRender((r) => r + 1);
     }
@@ -287,7 +300,8 @@ export const LogViewer = ({
       evtRef.current = null;
     }
 
-    const es = new EventSource(url);
+    // Ask the backend for at most maxLines result lines; it reports truncation in its end event.
+    const es = new EventSource(`${url}&max_lines=${maxLines}`);
     evtRef.current = es;
 
     es.onopen = () => setIsConnecting(false);
@@ -302,6 +316,19 @@ export const LogViewer = ({
         parsed = e.data;
       }
 
+      if (parsed && typeof parsed === "object" && parsed.type === "end") {
+        setStreamEnd({
+          emitted: Number(parsed.emitted) || 0,
+          maxLines: Number(parsed.max_lines) || maxLines,
+          truncated: parsed.truncated === true,
+        });
+        // All results received. Close so the browser does not reconnect and re-run the query.
+        try {
+          es.close();
+        } catch { }
+        return;
+      }
+
       const normalized = normalizeIncoming(parsed);
       if (normalized) {
         bufferRef.current.push(normalized);
@@ -311,8 +338,15 @@ export const LogViewer = ({
     const flush = setInterval(() => {
       if (bufferRef.current.length === 0) return;
 
-      // append buffered normalized entries and cap
-      linesRef.current = [...linesRef.current, ...bufferRef.current].slice(-maxLines);
+      // append buffered normalized entries. The backend already stops at maxLines;
+      // this cap is only a safety net, and keeps the first lines rather than the last.
+      const combined = [...linesRef.current, ...bufferRef.current];
+      if (combined.length > maxLines) {
+        linesRef.current = combined.slice(0, maxLines);
+        setStreamEnd((prev) => prev ?? { emitted: maxLines, maxLines, truncated: true });
+      } else {
+        linesRef.current = combined;
+      }
       bufferRef.current = [];
 
       forceRender((r) => r + 1);
@@ -408,16 +442,26 @@ export const LogViewer = ({
       </div>
 
       {/* RIGHT PANEL */}
-      <div className="flex-1 relative">
+      <div className="flex-1 relative flex flex-col min-w-0">
         {isConnecting && (
           <div className="absolute inset-0 bg-black/40 flex items-center justify-center z-50">
             <Spinner className="w-8 h-8 text-white" />
           </div>
         )}
 
+        {streamEnd?.truncated && (
+          <div
+            role="status"
+            className="bg-amber-500 text-black text-sm px-3 py-1"
+          >
+            Showing only the first {streamEnd.maxLines.toLocaleString()} result lines; more lines
+            match these filters. Narrow the levels, domains or keywords to see the rest.
+          </div>
+        )}
+
         <Virtuoso
           ref={virtuosoRef}
-          style={{ height: "100%", background: "#1e1e1e", color: "white" }}
+          style={{ flex: 1, minHeight: 0, background: "#1e1e1e", color: "white" }}
           data={linesRef.current}
           followOutput={isFollowing ? "smooth" : false}
           atBottomStateChange={(b) => setIsFollowing(b)}
