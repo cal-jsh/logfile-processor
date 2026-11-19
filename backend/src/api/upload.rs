@@ -1,8 +1,6 @@
 // local
-use crate::log_storage::{save_user_log, Session};
-use crate::logfile::index::LogFile;
-use crate::logfile::scan::summarize;
 use crate::model::upload_response::UploadResponse;
+use crate::open_session;
 // axum
 use axum::{
     extract::Multipart, http::StatusCode, response::IntoResponse, routing::post, Json, Router,
@@ -15,10 +13,9 @@ use uuid::Uuid;
 // utoipa
 use utoipa::ToSchema;
 // tracing
-use tracing::{debug, error, info, trace};
+use tracing::{debug, error, trace};
 // std
 use std::path::PathBuf;
-use std::time::Instant;
 
 /// Build the router
 pub fn router() -> Router {
@@ -50,8 +47,8 @@ pub struct UploadFileBody {
     tag = "Log Upload"
 )]
 pub async fn upload_handler(mut multipart: Multipart) -> impl IntoResponse {
-    // Generate session ID
-    let session_id = Uuid::new_v4().to_string();
+    // Name of the private copy
+    let upload_id = Uuid::new_v4().to_string();
 
     // Ensure upload directory exists
     let upload_dir = PathBuf::from("./uploads");
@@ -64,7 +61,7 @@ pub async fn upload_handler(mut multipart: Multipart) -> impl IntoResponse {
             .into_response();
     }
 
-    let file_path = upload_dir.join(format!("{}.log", session_id));
+    let file_path = upload_dir.join(format!("{}.log", upload_id));
     let mut uploaded = false;
 
     while let Ok(Some(mut field)) = multipart.next_field().await {
@@ -104,47 +101,18 @@ pub async fn upload_handler(mut multipart: Multipart) -> impl IntoResponse {
     }
 
     // Memory-map the file, build the sparse line index and the summary, in parallel,
-    // off the async runtime. The file is never read into a String.
-    let path = file_path.clone();
-    let opened = tokio::task::spawn_blocking(move || {
-        let file = LogFile::open(&path)?;
-        let started = Instant::now();
-        let summary = summarize(&file);
-        Ok::<_, std::io::Error>((file, summary, started.elapsed()))
-    })
-    .await;
-    let (file, summary, summary_time) = match opened {
-        Ok(Ok(v)) => v,
+    // off the async runtime. The file is never read into a String. The upload is a
+    // private copy, so the session owns it and deletes it on close.
+    let opened = tokio::task::spawn_blocking(move || open_session(file_path, true)).await;
+    match opened {
+        Ok(Ok(resp)) => Json(resp).into_response(),
         Ok(Err(e)) => {
             error!("Failed to open log file for indexing: {:?}", e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to open log file").into_response();
+            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to open log file").into_response()
         }
         Err(e) => {
             error!("Indexing task failed: {:?}", e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to index log file").into_response();
+            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to index log file").into_response()
         }
-    };
-    let index_ms = file.index_time.as_secs_f64() * 1000.0;
-    let summary_ms = summary_time.as_secs_f64() * 1000.0;
-    info!(
-        "Indexed {} lines ({} bytes) in {:.1} ms, summary in {:.1} ms, session {}",
-        file.line_count(),
-        file.len(),
-        index_ms,
-        summary_ms,
-        session_id
-    );
-    debug!("Summary: {:?}", summary);
-
-    // Save the session (indexed file + result cache)
-    save_user_log(&session_id, Session::new(file_path, file));
-
-    // Respond with session ID and the actual summary
-    Json(UploadResponse {
-        session_id,
-        summary,
-        index_ms,
-        summary_ms,
-    })
-    .into_response()
+    }
 }

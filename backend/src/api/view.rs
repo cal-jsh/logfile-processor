@@ -396,6 +396,106 @@ fn today() -> String {
     format!("{y:04}-{m:02}-{d:02}")
 }
 
+/// Write every row of the view as text (original lines) or CSV to `out`.
+pub fn write_view(
+    file: &LogFile,
+    matches: &MatchSet,
+    view: &View,
+    csv: bool,
+    out: &mut impl std::io::Write,
+) -> std::io::Result<()> {
+    let mut buf: Vec<u8> = Vec::with_capacity(MAX_DISPLAY_BYTES);
+    if csv {
+        out.write_all(b"Line,Timestamp,Level,Domain,Matched,Context,Message
+")?;
+    }
+    for (_, l, bytes) in ViewLines::new(file, view, 0, view.row_count()) {
+        let is_match = matches.is_match(l);
+        if csv {
+            buf.clear();
+            let text = String::from_utf8_lossy(bytes);
+            let f = split_log_line(&text);
+            buf.extend_from_slice((l + 1).to_string().as_bytes());
+            for field in [f.map(|f| f.ts), f.map(|f| f.level), f.map(|f| f.domain)] {
+                buf.push(b',');
+                csv_field(&mut buf, field.unwrap_or(""));
+            }
+            buf.extend_from_slice(if is_match { b",true,false," } else { b",false,true," });
+            csv_field(&mut buf, &text);
+            out.write_all(&buf)?;
+        } else {
+            out.write_all(bytes)?;
+        }
+        out.write_all(b"
+")?;
+    }
+    out.flush()
+}
+
+/// Export the view of an open session (filter + context) to a local file.
+/// Used by the desktop app, whose webview cannot download from the API.
+pub async fn export_view_to_file(
+    session_id: &str,
+    levels: Option<&str>,
+    domains: Option<&str>,
+    keywords: Option<&str>,
+    context: u64,
+    csv: bool,
+    path: std::path::PathBuf,
+) -> Result<u64, String> {
+    let session = get_user_log(session_id).ok_or("Session ID not found")?;
+    let (matches, _) = session
+        .matches(LineFilter::from_csv(levels, domains, keywords))
+        .await
+        .map_err(|e| match e {
+            QueryError::Cancelled => "Cancelled by a newer filter".to_string(),
+            QueryError::Internal(m) => m,
+        })?;
+    let view = matches.view(context);
+    let rows = view.row_count();
+    tokio::task::spawn_blocking(move || {
+        let f = std::fs::File::create(&path)?;
+        let mut out = std::io::BufWriter::with_capacity(1024 * 1024, f);
+        write_view(&session.file, &matches, &view, csv, &mut out)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+    Ok(rows)
+}
+
+/// Buffers writes and sends them as body chunks; fails once the client is gone.
+struct ChannelWriter {
+    tx: tokio::sync::mpsc::Sender<Result<Bytes, std::io::Error>>,
+    buf: Vec<u8>,
+}
+
+impl ChannelWriter {
+    const FLUSH_AT: usize = 256 * 1024;
+    fn send(&mut self) -> std::io::Result<()> {
+        if self.buf.is_empty() {
+            return Ok(());
+        }
+        let chunk = Bytes::from(std::mem::take(&mut self.buf));
+        self.tx
+            .blocking_send(Ok(chunk))
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "client went away"))
+    }
+}
+
+impl std::io::Write for ChannelWriter {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        self.buf.extend_from_slice(data);
+        if self.buf.len() >= Self::FLUSH_AT {
+            self.send()?;
+        }
+        Ok(data.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.send()
+    }
+}
+
 /// Download every row of the view as text (original lines) or CSV, streamed straight
 /// from the memory-mapped file.
 pub async fn export_view(Query(q): Query<ViewQuery>) -> Result<Response, ApiError> {
@@ -404,56 +504,31 @@ pub async fn export_view(Query(q): Query<ViewQuery>) -> Result<Response, ApiErro
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(8);
 
     tokio::task::spawn_blocking(move || {
-        const FLUSH_AT: usize = 256 * 1024;
-        let mut buf: Vec<u8> = Vec::with_capacity(FLUSH_AT + MAX_DISPLAY_BYTES);
-        if csv {
-            buf.extend_from_slice(b"Line,Timestamp,Level,Domain,Matched,Context,Message\n");
-        }
-        {
-            for (_, l, bytes) in ViewLines::new(&r.session.file, &r.view, 0, r.view.row_count()) {
-                let is_match = r.matches.is_match(l);
-                if csv {
-                    let text = String::from_utf8_lossy(bytes);
-                    let f = split_log_line(&text);
-                    buf.extend_from_slice((l + 1).to_string().as_bytes());
-                    for field in [f.map(|f| f.ts), f.map(|f| f.level), f.map(|f| f.domain)] {
-                        buf.push(b',');
-                        csv_field(&mut buf, field.unwrap_or(""));
-                    }
-                    buf.extend_from_slice(if is_match { b",true,false," } else { b",false,true," });
-                    csv_field(&mut buf, &text);
-                } else {
-                    buf.extend_from_slice(bytes);
-                }
-                buf.push(b'\n');
-                if buf.len() >= FLUSH_AT {
-                    let chunk = Bytes::from(std::mem::take(&mut buf));
-                    if tx.blocking_send(Ok(chunk)).is_err() {
-                        return; // client went away
-                    }
-                }
-            }
-        }
-        if !buf.is_empty() {
-            let _ = tx.blocking_send(Ok(Bytes::from(buf)));
-        }
+        let mut out = ChannelWriter { tx, buf: Vec::with_capacity(ChannelWriter::FLUSH_AT) };
+        // an error only means the client went away
+        let _ = write_view(&r.session.file, &r.matches, &r.view, csv, &mut out);
     });
 
     let stream = futures::stream::unfold(rx, |mut rx| async move {
         rx.recv().await.map(|item| (item, rx))
     });
-    let (ext, mime) = if csv { ("csv", "text/csv") } else { ("txt", "text/plain") };
+    let mime = if csv { "text/csv" } else { "text/plain" };
     Ok((
         [
             (header::CONTENT_TYPE, mime.to_string()),
             (
                 header::CONTENT_DISPOSITION,
-                format!("attachment; filename=\"logs_{}.{}\"", today(), ext),
+                format!("attachment; filename=\"{}\"", export_file_name(csv)),
             ),
         ],
         Body::from_stream(stream),
     )
         .into_response())
+}
+
+/// Default export file name, e.g. `logs_2026-11-19.csv`.
+pub fn export_file_name(csv: bool) -> String {
+    format!("logs_{}.{}", today(), if csv { "csv" } else { "txt" })
 }
 
 // ---------------------------------------------------------------- /close_session

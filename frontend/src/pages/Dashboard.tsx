@@ -7,14 +7,19 @@ import LogSummarySidebar from "../components/LogSummarySidebar";
 import { SidebarProvider, SidebarInset } from "../components/ui/sidebar";
 import LogViewerOptionsCard from "../components/LogViewerOptionsCard";
 import { Input } from "../components/ui/input";
+import { Button } from "../components/ui/button";
 
 interface DashboardProps {
     sessionId: string;
     baseUrl: string; // e.g. "http://localhost:8080"
     summary: LogSummary;
+    /** Path (desktop) or name (web) of the open file */
+    fileName?: string;
+    /** Close this file and go back to the start page */
+    onClose?: () => void;
 }
 
-export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summary }) => {
+export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summary, fileName, onClose }) => {
     const [selectedLevels, setSelectedLevels] = useState<string[]>([]);
     const [selectedDomains, setSelectedDomains] = useState<string[]>([]);
     const [selectedKeywords, setSelectedKeywords] = useState<string[]>([]);
@@ -71,6 +76,20 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
 
             <SidebarInset>
                 <div style={{ padding: "20px" }}>
+                {/* Open file */}
+                {(fileName || onClose) && (
+                    <div className="flex items-center justify-between gap-2 mb-3">
+                        <span className="text-sm text-muted-foreground truncate" title={fileName}>
+                            {fileName}
+                        </span>
+                        {onClose && (
+                            <Button size="sm" variant="outline" onClick={onClose}>
+                                Open another file
+                            </Button>
+                        )}
+                    </div>
+                )}
+
                 {/* Delta options card */}
                 <LogViewerOptionsCard showDelta={showDelta} setShowDelta={setShowDelta} />
 

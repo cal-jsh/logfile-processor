@@ -4,6 +4,7 @@ import { Button } from "./ui/button";
 import { colorMap } from "../lib/colorMap";
 import { Spinner } from "./ui/spinner";
 import { Download } from "lucide-react";
+import { exportView, isDesktop } from "../lib/platform";
 
 /*
  * Viewport-based log viewer.
@@ -338,7 +339,27 @@ export const LogViewer = ({
   };
 
   /* ---------------- Downloads (streamed by the backend) ---------------- */
-  const download = (format: "txt" | "csv") => {
+  const [exportMsg, setExportMsg] = useState<string | null>(null);
+  const download = async (format: "txt" | "csv") => {
+    if (isDesktop) {
+      // The webview can't download from the API: save through a native dialog.
+      const p = new URLSearchParams(filterParams);
+      setExportMsg("Exporting…");
+      try {
+        const saved = await exportView({
+          sessionId,
+          levels: p.get("levels"),
+          domains: p.get("domains"),
+          keywords: p.get("keywords"),
+          context,
+          format,
+        });
+        setExportMsg(saved ? `Saved to ${saved}` : null);
+      } catch (e) {
+        setExportMsg(`Export failed: ${e}`);
+      }
+      return;
+    }
     const a = document.createElement("a");
     a.href = `${baseUrl}/view/export?${viewParams}&format=${format}`;
     a.click();
@@ -413,6 +434,9 @@ export const LogViewer = ({
             CSV
           </Button>
         </div>
+        {exportMsg && (
+          <div className="text-xs text-muted-foreground mb-2 break-all">{exportMsg}</div>
+        )}
 
         <div className="flex gap-2 mb-2">
           <Input
