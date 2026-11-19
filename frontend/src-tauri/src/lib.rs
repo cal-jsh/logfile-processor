@@ -191,6 +191,7 @@ fn run_with(initial: Option<Result<String, String>>) {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             // Bind before the window loads, so the UI can ask for the URL right away.
             let listener = std::net::TcpListener::bind("127.0.0.1:0")?;

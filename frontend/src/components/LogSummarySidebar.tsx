@@ -2,6 +2,7 @@ import type { LogSummary } from "../../openapi/client/models/LogSummary";
 import {
   Sidebar,
   SidebarContent,
+  SidebarFooter,
   SidebarHeader,
   SidebarGroup,
   SidebarGroupLabel,
@@ -18,7 +19,9 @@ import { Button } from "./ui/button";
 import { colorMap, LEVEL_ORDER } from "../lib/colorMap";
 import type { MinimapAxis } from "./Minimap";
 import { cn } from "@/lib/utils";
-import { FileText, FolderOpen, Minus, Plus, Search } from "lucide-react";
+import { Bug, FileText, FolderOpen, Minus, Plus, Search } from "lucide-react";
+import { useState } from "react";
+import BugReportDialog from "./BugReportDialog";
 
 interface Props {
   summary: LogSummary;
@@ -96,6 +99,7 @@ export default function LogSummarySidebar({
   const dur = duration(summary.start_timestamp, summary.stop_timestamp);
   const levelCounts = LEVEL_ORDER.map((l) => ({ level: l, count: summary.levels?.[l] ?? 0 }));
   const levelTotal = levelCounts.reduce((a, b) => a + b.count, 0);
+  const [bugReportOpen, setBugReportOpen] = useState(false);
   const otherLines =
     summary.line_count != null && summary.line_count !== summary.total_lines
       ? summary.line_count - summary.total_lines
@@ -325,6 +329,24 @@ export default function LogSummarySidebar({
           </SidebarGroupContent>
         </SidebarGroup>
       </SidebarContent>
+
+      {/* Pinned to the bottom, apart from the file's actions and options */}
+      <SidebarSeparator className="data-[orientation=horizontal]:w-auto" />
+      <SidebarFooter>
+        <SidebarMenu>
+          <SidebarMenuItem>
+            <SidebarMenuButton
+              tooltip="Report a bug"
+              onClick={() => setBugReportOpen(true)}
+              className="text-muted-foreground"
+            >
+              <Bug />
+              <span>Report a bug</span>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+        </SidebarMenu>
+      </SidebarFooter>
+      <BugReportDialog open={bugReportOpen} onOpenChange={setBugReportOpen} />
       <SidebarRail />
     </Sidebar>
   );

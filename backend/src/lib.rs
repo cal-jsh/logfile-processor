@@ -38,6 +38,7 @@ pub fn router() -> Router {
         .merge(api::filter::router())
         .merge(api::view::router())
         .merge(api::minimap::router())
+        .merge(api::version::router())
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
         .layer(cors)
 }
@@ -61,6 +62,7 @@ pub fn desktop_router() -> Router {
     Router::new()
         .merge(api::view::router())
         .merge(api::minimap::router())
+        .merge(api::version::router())
         .layer(cors)
 }
 
