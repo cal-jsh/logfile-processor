@@ -18,4 +18,10 @@ npm run codegen
 npm run dev
 ```
 
+#### Bundle as packae
+
+```shell
+npx tauri build
+```
+
 ### Test

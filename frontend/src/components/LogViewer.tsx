@@ -3,8 +3,9 @@ import { Input } from "./ui/input";
 import { Button } from "./ui/button";
 import { colorMap } from "../lib/colorMap";
 import { Spinner } from "./ui/spinner";
-import { Download } from "lucide-react";
+import { Download, Hash, Search } from "lucide-react";
 import { exportView, isDesktop } from "../lib/platform";
+import { FloatingPanel } from "./FloatingPanel";
 
 /*
  * Viewport-based log viewer.
@@ -73,6 +74,50 @@ function formatDelta(ms: number): string {
   else return `${(ms / 1000).toFixed(2)} s`;
 }
 
+/** Mark the occurrences of `q` (case-insensitive) in a search result */
+function highlight(text: string, q: string): React.ReactNode {
+  if (!q) return text;
+  const lower = text.toLowerCase();
+  const needle = q.toLowerCase();
+  const out: React.ReactNode[] = [];
+  let i = 0;
+  for (let j = lower.indexOf(needle); j !== -1 && out.length < 40; j = lower.indexOf(needle, i)) {
+    if (j > i) out.push(text.slice(i, j));
+    out.push(
+      <mark key={j} className="rounded-sm bg-yellow-300/70 px-0.5 text-inherit">
+        {text.slice(j, j + q.length)}
+      </mark>
+    );
+    i = j + q.length;
+  }
+  if (i < text.length) out.push(text.slice(i));
+  return out;
+}
+
+/** A search hit, compact: time, level, domain and the message, with the match marked */
+function ResultText({ text, q }: { text: string; q: string }) {
+  const p = parseLine(text);
+  if (!p.level) {
+    // not in the log format: start shortly before the match so it stays visible
+    const at = text.toLowerCase().indexOf(q.toLowerCase());
+    const snippet = at > 40 ? "…" + text.slice(at - 20) : text;
+    return <span className="truncate">{highlight(snippet, q)}</span>;
+  }
+  const time = p.timestamp?.match(/\d{2}:\d{2}:\d{2}(\.\d{1,3})?/)?.[0];
+  return (
+    <span className="flex min-w-0 items-baseline gap-2">
+      {time && <span className="shrink-0 tabular-nums text-muted-foreground">{time}</span>}
+      <span className="w-11 shrink-0 font-semibold" style={{ color: `color-mix(in oklab, ${colorMap[p.level] ?? "currentColor"} 70%, var(--foreground))` }}>
+        {p.level}
+      </span>
+      <span className="truncate">
+        {p.domain && <span className="text-muted-foreground">{highlight(p.domain, q)} </span>}
+        {highlight(p.message, q)}
+      </span>
+    </span>
+  );
+}
+
 function clamp(v: number, lo: number, hi: number) {
   return Math.min(Math.max(v, lo), hi);
 }
@@ -84,6 +129,8 @@ export const LogViewer = ({
   filterParams,
   context,
   showDelta,
+  searchOpen,
+  onSearchOpenChange,
 }: {
   baseUrl: string;
   sessionId: string;
@@ -91,6 +138,9 @@ export const LogViewer = ({
   filterParams: string;
   context: number;
   showDelta: boolean;
+  /** The floating "Search & go to line" panel */
+  searchOpen: boolean;
+  onSearchOpenChange: (open: boolean) => void;
 }) => {
   const viewParams = `session_id=${encodeURIComponent(sessionId)}${filterParams}&context=${context}`;
 
@@ -338,6 +388,42 @@ export const LogViewer = ({
     if (row < rowCount) jumpToRow(row);
   };
 
+  /* ---------------- Keyboard: Ctrl+F search, Ctrl+G go to line ----------------
+     The rows are virtualized, so the browser's own find can't see them anyway. */
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const gotoInputRef = useRef<HTMLInputElement>(null);
+  const focusAfterOpen = useRef<"search" | "goto" | null>(null);
+
+  const focusRequested = () => {
+    const which = focusAfterOpen.current;
+    focusAfterOpen.current = null;
+    const el = which === "goto" ? gotoInputRef.current : which === "search" ? searchInputRef.current : null;
+    el?.focus();
+    el?.select();
+  };
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
+      const k = e.key.toLowerCase();
+      if (k !== "f" && k !== "g") return;
+      e.preventDefault();
+      focusAfterOpen.current = k === "f" ? "search" : "goto";
+      if (searchOpen) focusRequested();
+      else onSearchOpenChange(true);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+
+  // opened from the sidebar or a shortcut: put the cursor in the search box
+  useEffect(() => {
+    if (!searchOpen) return;
+    if (!focusAfterOpen.current) focusAfterOpen.current = "search";
+    focusRequested();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchOpen]);
+
   /* ---------------- Downloads (streamed by the backend) ---------------- */
   const [exportMsg, setExportMsg] = useState<string | null>(null);
   const download = async (format: "txt" | "csv") => {
@@ -418,88 +504,29 @@ export const LogViewer = ({
     );
   }
 
+  const panelStatus = isSearching
+    ? "Searching…"
+    : search.length >= SEARCH_MIN
+      ? searchResults.length === 0
+        ? "No matches"
+        : searchComplete
+          ? `${searchResults.length.toLocaleString()} ${searchResults.length === 1 ? "match" : "matches"}`
+          : `First ${searchResults.length.toLocaleString()} matches`
+      : searchInput.length > 0
+        ? `Type at least ${SEARCH_MIN} characters`
+        : "Searches the rows of the current view";
+
   return (
-    <div className="flex h-[750px] w-full border rounded overflow-hidden">
-      {/* LEFT PANEL */}
-      <div className="w-80 border-r bg-muted/10 p-2 flex flex-col">
-        {/* Downloads */}
-        <div className="flex gap-2 mb-2">
-          <Button size="sm" variant="outline" disabled={!rowCount} onClick={() => download("txt")}>
-            <Download className="w-4 h-4 mr-1" />
-            Text
-          </Button>
-
-          <Button size="sm" variant="outline" disabled={!rowCount} onClick={() => download("csv")}>
-            <Download className="w-4 h-4 mr-1" />
-            CSV
-          </Button>
+    <div className="relative flex h-full min-h-0 w-full flex-col overflow-hidden rounded-lg border">
+      {loading && (
+        <div className="absolute inset-0 bg-black/40 flex items-center justify-center z-30">
+          <Spinner className="w-8 h-8 text-white" />
         </div>
-        {exportMsg && (
-          <div className="text-xs text-muted-foreground mb-2 break-all">{exportMsg}</div>
-        )}
+      )}
 
-        <div className="flex gap-2 mb-2">
-          <Input
-            placeholder="Go to line…"
-            inputMode="numeric"
-            value={gotoInput}
-            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setGotoInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") goToLine();
-            }}
-          />
-          <Button size="sm" variant="outline" onClick={goToLine} disabled={!rowCount}>
-            Go
-          </Button>
-        </div>
-
-        <Input
-          placeholder="Search…"
-          className="mb-2"
-          value={searchInput}
-          onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSearchInput(e.target.value)}
-        />
-
-        {/* Results */}
-        <div className="flex-1 overflow-auto border rounded p-1">
-          {isSearching && (
-            <div className="text-sm text-muted-foreground px-1 py-1">Searching…</div>
-          )}
-
-          {!isSearching && search.length >= SEARCH_MIN && searchResults.length === 0 && (
-            <div className="text-sm text-muted-foreground px-1 py-1">No matches found</div>
-          )}
-
-          {searchResults.length > 0 && (
-            <div className="text-xs text-muted-foreground px-1 pb-1">
-              {searchComplete
-                ? `Showing ${searchResults.length} results`
-                : `Showing the first ${searchResults.length} results`}
-            </div>
-          )}
-
-          {searchResults.map((r) => (
-            <div
-              key={r.row}
-              className="px-2 py-1 text-sm font-mono cursor-pointer rounded hover:bg-accent"
-              onClick={() => jumpToRow(r.row)}
-            >
-              <span className="font-bold text-primary mr-2">#{r.line_number}</span>
-              {r.text}
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* RIGHT PANEL */}
-      <div className="flex-1 relative flex flex-col min-w-0">
-        {loading && (
-          <div className="absolute inset-0 bg-black/40 flex items-center justify-center z-50">
-            <Spinner className="w-8 h-8 text-white" />
-          </div>
-        )}
-
-        <div role="status" className="text-xs px-3 py-1 border-b bg-muted/30 text-muted-foreground">
+      {/* Status bar + exports */}
+      <div className="flex items-center gap-2 border-b bg-muted/30 px-3 py-1">
+        <div role="status" className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
           {error
             ? `Error: ${error}`
             : info
@@ -510,35 +537,121 @@ export const LogViewer = ({
               (rowCount > 0 ? ` · rows ${(firstRow + 1).toLocaleString()}–${Math.min(rowCount, firstRow + visibleRows).toLocaleString()}` : "")
               : "Loading…"}
         </div>
-
-        <div className="flex flex-1 min-h-0" style={{ background: "#1e1e1e", color: "white" }}>
-          <div
-            ref={viewportRef}
-            tabIndex={0}
-            onKeyDown={onKeyDown}
-            className="flex-1 min-w-0 overflow-x-auto overflow-y-hidden outline-none text-sm"
-          >
-            <div style={{ transform: `translateY(${-offsetPx}px)`, minWidth: "max-content" }}>{rows}</div>
+        {exportMsg && (
+          <div className="max-w-[40%] truncate text-xs text-muted-foreground" title={exportMsg}>
+            {exportMsg}
           </div>
+        )}
+        <span className="hidden text-xs text-muted-foreground sm:inline">Export</span>
+        <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" disabled={!rowCount} onClick={() => download("txt")}>
+          <Download className="size-3.5" />
+          Text
+        </Button>
+        <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" disabled={!rowCount} onClick={() => download("csv")}>
+          <Download className="size-3.5" />
+          CSV
+        </Button>
+      </div>
 
-          {/* Scrollbar */}
-          <div
-            ref={trackRef}
-            className="w-3 relative bg-white/5 cursor-pointer"
-            onPointerDown={onTrackDown}
-          >
-            {rowCount > visibleRows && (
-              <div
-                className="absolute left-0.5 right-0.5 rounded bg-white/40 hover:bg-white/60"
-                style={{ top: thumbTop, height: thumbHeight }}
-                onPointerDown={onThumbDown}
-                onPointerMove={onThumbMove}
-                onPointerUp={onThumbUp}
-              />
-            )}
-          </div>
+      <div className="flex flex-1 min-h-0" style={{ background: "#1e1e1e", color: "white" }}>
+        <div
+          ref={viewportRef}
+          tabIndex={0}
+          onKeyDown={onKeyDown}
+          className="flex-1 min-w-0 overflow-x-auto overflow-y-hidden outline-none text-sm"
+        >
+          <div style={{ transform: `translateY(${-offsetPx}px)`, minWidth: "max-content" }}>{rows}</div>
+        </div>
+
+        {/* Scrollbar */}
+        <div
+          ref={trackRef}
+          className="w-3 relative bg-white/5 cursor-pointer"
+          onPointerDown={onTrackDown}
+        >
+          {rowCount > visibleRows && (
+            <div
+              className="absolute left-0.5 right-0.5 rounded bg-white/40 hover:bg-white/60"
+              style={{ top: thumbTop, height: thumbHeight }}
+              onPointerDown={onThumbDown}
+              onPointerMove={onThumbMove}
+              onPointerUp={onThumbUp}
+            />
+          )}
         </div>
       </div>
+
+      {/* Search & go to line: floating panel */}
+      {searchOpen && (
+        <FloatingPanel
+          title="Search & go to line"
+          icon={<Search className="size-4 text-muted-foreground" />}
+          onClose={() => onSearchOpenChange(false)}
+          storageKey="logviewer.searchPanel"
+          defaultRect={() => ({
+            x: window.innerWidth - 460,
+            y: 120,
+            w: 440,
+            h: Math.min(520, window.innerHeight - 160),
+          })}
+        >
+          <div className="flex flex-col gap-2 border-b p-3">
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                ref={searchInputRef}
+                placeholder="Search in view…  (Ctrl+F)"
+                className="h-8 pl-8"
+                value={searchInput}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSearchInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && searchResults.length > 0) jumpToRow(searchResults[0].row);
+                }}
+              />
+            </div>
+            <div className="flex gap-2">
+              <div className="relative flex-1">
+                <Hash className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  ref={gotoInputRef}
+                  placeholder="Go to line…  (Ctrl+G)"
+                  inputMode="numeric"
+                  className="h-8 pl-8"
+                  value={gotoInput}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setGotoInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") goToLine();
+                  }}
+                />
+              </div>
+              <Button size="sm" variant="secondary" className="h-8" onClick={goToLine} disabled={!rowCount}>
+                Go
+              </Button>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 px-3 py-1.5 text-xs text-muted-foreground">
+            {isSearching && <Spinner className="size-3" />}
+            {panelStatus}
+          </div>
+
+          {/* Results */}
+          <div className="min-h-0 flex-1 overflow-auto px-1.5 pb-4">
+            {searchResults.map((r) => (
+              <button
+                type="button"
+                key={r.row}
+                className={`flex w-full items-baseline gap-2 rounded-md px-2 py-1 text-left font-mono text-xs hover:bg-accent ${r.row === highlightRow ? "bg-accent" : ""}`}
+                onClick={() => jumpToRow(r.row)}
+                title={r.text}
+              >
+                <span className="w-14 shrink-0 text-right tabular-nums text-muted-foreground">{r.line_number}</span>
+                <ResultText text={r.text} q={search} />
+              </button>
+            ))}
+          </div>
+        </FloatingPanel>
+      )}
     </div>
   );
 };
