@@ -6,6 +6,7 @@ import { Spinner } from "./ui/spinner";
 import { Download, Hash, Search } from "lucide-react";
 import { exportView, isDesktop } from "../lib/platform";
 import { FloatingPanel } from "./FloatingPanel";
+import { Minimap, parseLogTime, type MinimapAxis, type VisibleRange } from "./Minimap";
 
 /*
  * Viewport-based log viewer.
@@ -129,6 +130,8 @@ export const LogViewer = ({
   filterParams,
   context,
   showDelta,
+  showMinimap,
+  minimapAxis,
   searchOpen,
   onSearchOpenChange,
 }: {
@@ -138,6 +141,10 @@ export const LogViewer = ({
   filterParams: string;
   context: number;
   showDelta: boolean;
+  /** The level minimap above the rows */
+  showMinimap: boolean;
+  /** Minimap columns by equal line counts or by equal time slices */
+  minimapAxis: MinimapAxis;
   /** The floating "Search & go to line" panel */
   searchOpen: boolean;
   onSearchOpenChange: (open: boolean) => void;
@@ -388,6 +395,30 @@ export const LogViewer = ({
     if (row < rowCount) jumpToRow(row);
   };
 
+  /* ---------------- Minimap: jump to a file line ----------------
+     When every line of the file is a row (no filter, all lines in the log format),
+     row = line - 1 and dragging needs no request. Otherwise the backend maps the line
+     to the first row at or after it; only the latest request counts while dragging. */
+  const minimapReqRef = useRef<AbortController | null>(null);
+  const identityRows = !!info && info.row_count === info.line_count;
+  const centerRow = (row: number) => scrollTo(Math.min(row, rowCount - 1) - Math.floor(visibleRows / 2));
+  const jumpToLine = (line: number) => {
+    if (!rowCount) return;
+    if (identityRows) {
+      centerRow(line - 1);
+      return;
+    }
+    minimapReqRef.current?.abort();
+    const ctrl = new AbortController();
+    minimapReqRef.current = ctrl;
+    fetch(`${baseUrl}/view/row_of_line?${viewParams}&line=${line}`, { signal: ctrl.signal })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: { row: number } | null) => {
+        if (d && minimapReqRef.current === ctrl) centerRow(d.row);
+      })
+      .catch(() => { });
+  };
+
   /* ---------------- Keyboard: Ctrl+F search, Ctrl+G go to line ----------------
      The rows are virtualized, so the browser's own find can't see them anyway. */
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -459,6 +490,29 @@ export const LogViewer = ({
   // remember the line at the top, to keep the position when the context changes
   const topRowData = getRow(firstRow);
   topLineRef.current = topRowData ? topRowData.line_number : topLineRef.current;
+
+  // file lines (and their times) on screen, for the minimap's viewport box; while the
+  // rows are loading, the last known range is kept
+  const lastRow = Math.min(rowCount - 1, firstRow + visibleRows - 1);
+  const visibleRef = useRef<VisibleRange | null>(null);
+  if (rowCount > 0) {
+    const ra = getRow(firstRow);
+    const rb = getRow(lastRow);
+    const a = identityRows ? firstRow + 1 : ra?.line_number;
+    const b = identityRows ? lastRow + 1 : rb?.line_number;
+    if (a != null && b != null) {
+      const prev = visibleRef.current;
+      const time = (r: Row | undefined) => (r ? parseLogTime(parseLine(r.text).timestamp) : null);
+      visibleRef.current = {
+        first: a,
+        last: b,
+        tFirst: ra ? time(ra) : prev?.tFirst ?? null,
+        tLast: rb ? time(rb) : prev?.tLast ?? null,
+      };
+    }
+  } else {
+    visibleRef.current = null;
+  }
 
   const rows: JSX.Element[] = [];
   for (let i = 0; i < renderCount; i++) {
@@ -552,6 +606,17 @@ export const LogViewer = ({
           CSV
         </Button>
       </div>
+
+      {showMinimap && (
+        <Minimap
+          baseUrl={baseUrl}
+          sessionId={sessionId}
+          filterParams={filterParams}
+          axis={minimapAxis}
+          visible={visibleRef.current}
+          onJumpToLine={jumpToLine}
+        />
+      )}
 
       <div className="flex flex-1 min-h-0" style={{ background: "#1e1e1e", color: "white" }}>
         <div

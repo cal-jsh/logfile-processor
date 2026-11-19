@@ -320,6 +320,30 @@ mod bench {
             );
         }
 
+        let t = Instant::now();
+        let lv = crate::logfile::levels::LevelIndex::build(&file);
+        println!("level index: {:.0} ms", ms(t.elapsed()));
+        let errors = scan_matches(&file, &CompiledFilter::new(LineFilter::from_csv(Some("ERROR"), None, None)), &no_cancel)
+            .unwrap_or_else(|_| panic!("cancelled"));
+        for n in [1000u64, 4000, 16384] {
+            let t = Instant::now();
+            let b = lv.buckets(n);
+            let all = ms(t.elapsed());
+            let t = Instant::now();
+            let f = lv.buckets_in(n, errors.ranges());
+            println!("minimap {n:5} buckets: all {all:.2} ms, ERROR filter {:.2} ms ({} / {})", ms(t.elapsed()), b.len(), f.len());
+        }
+
+        let t = Instant::now();
+        let tb = crate::logfile::timeline::TimeBins::build_all(&file, &lv);
+        println!("time bins, all lines: {:.0} ms ({} timed lines)", ms(t.elapsed()), tb.timed_lines);
+        let t = Instant::now();
+        let tf = crate::logfile::timeline::TimeBins::build_ranges(&file, &lv, errors.ranges());
+        println!("time bins, ERROR filter: {:.0} ms ({} timed lines)", ms(t.elapsed()), tf.timed_lines);
+        let t = Instant::now();
+        let _ = tb.columns(4000);
+        println!("time columns 4000: {:.2} ms", ms(t.elapsed()));
+
         // random-access latency: 256 lines at spread-out positions
         let n = file.line_count();
         let mut worst = 0f64;

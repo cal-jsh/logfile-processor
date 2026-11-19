@@ -37,6 +37,7 @@ pub fn router() -> Router {
         .layer(RequestBodyLimitLayer::new(1024 * 1024 * 1024))
         .merge(api::filter::router())
         .merge(api::view::router())
+        .merge(api::minimap::router())
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
         .layer(cors)
 }
@@ -57,7 +58,10 @@ pub fn desktop_router() -> Router {
         .allow_methods(Any)
         .allow_headers(Any);
 
-    Router::new().merge(api::view::router()).layer(cors)
+    Router::new()
+        .merge(api::view::router())
+        .merge(api::minimap::router())
+        .layer(cors)
 }
 
 /// Memory-map `path`, build the sparse line index and the summary, and register a

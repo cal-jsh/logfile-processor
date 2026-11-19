@@ -2,6 +2,8 @@
 //! results, so scrolling, changing the context and exporting never rescan the file.
 
 use crate::logfile::index::LogFile;
+use crate::logfile::levels::LevelIndex;
+use crate::logfile::timeline::TimeBins;
 use crate::logfile::scan::{scan_matches, Cancelled, CompiledFilter};
 use crate::logfile::view::MatchSet;
 use crate::parsing::line_filter::LineFilter;
@@ -27,6 +29,10 @@ pub struct Session {
     /// Files opened in place (desktop app) are only unmapped.
     pub owned: bool,
     queries: Mutex<QueryCache>,
+    /// Per-line log levels for the minimap, built on first use.
+    levels: tokio::sync::OnceCell<Arc<LevelIndex>>,
+    /// All log lines binned by time (minimap "by time"), built on first use.
+    time_bins: tokio::sync::OnceCell<Arc<TimeBins>>,
 }
 
 #[derive(Default)]
@@ -45,7 +51,7 @@ pub enum QueryError {
 
 impl Session {
     pub fn new(path: PathBuf, file: LogFile, owned: bool) -> Self {
-        Self { path, file: Arc::new(file), owned, queries: Mutex::new(QueryCache::default()) }
+        Self { path, file: Arc::new(file), owned, queries: Mutex::new(QueryCache::default()), levels: Default::default(), time_bins: Default::default() }
     }
 
     /// The lines matching `filter`, from the cache or by scanning the file.
@@ -104,6 +110,46 @@ impl Session {
             m.scan_time.as_millis()
         );
         Ok((m, false))
+    }
+
+    /// The per-line level index, built (once, in parallel) on first use.
+    /// Returns the index and whether it was already built.
+    pub async fn levels(&self) -> Result<(Arc<LevelIndex>, bool), QueryError> {
+        if let Some(l) = self.levels.get() {
+            return Ok((l.clone(), true));
+        }
+        let file = self.file.clone();
+        let l = self
+            .levels
+            .get_or_try_init(|| async move {
+                let idx = tokio::task::spawn_blocking(move || LevelIndex::build(&file))
+                    .await
+                    .map_err(|e| QueryError::Internal(e.to_string()))?;
+                info!(
+                    "Level index of {} lines built in {} ms",
+                    idx.line_count(),
+                    idx.build_time.as_millis()
+                );
+                Ok::<_, QueryError>(Arc::new(idx))
+            })
+            .await?;
+        Ok((l.clone(), false))
+    }
+
+    /// All log lines binned by time, built (once, in parallel) on first use.
+    pub async fn time_bins(&self, levels: Arc<LevelIndex>) -> Result<Arc<TimeBins>, QueryError> {
+        let file = self.file.clone();
+        let bins = self
+            .time_bins
+            .get_or_try_init(|| async move {
+                let bins = tokio::task::spawn_blocking(move || TimeBins::build_all(&file, &levels))
+                    .await
+                    .map_err(|e| QueryError::Internal(e.to_string()))?;
+                info!("Time bins of {} lines built in {} ms", bins.timed_lines, bins.build_time.as_millis());
+                Ok::<_, QueryError>(Arc::new(bins))
+            })
+            .await?;
+        Ok(bins.clone())
     }
 
     /// Register a scan for `key` and cancel a running scan for any other query.

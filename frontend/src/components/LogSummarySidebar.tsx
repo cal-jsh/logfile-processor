@@ -16,6 +16,8 @@ import {
 import { Checkbox } from "./ui/checkbox";
 import { Button } from "./ui/button";
 import { colorMap, LEVEL_ORDER } from "../lib/colorMap";
+import type { MinimapAxis } from "./Minimap";
+import { cn } from "@/lib/utils";
 import { FileText, FolderOpen, Minus, Plus, Search } from "lucide-react";
 
 interface Props {
@@ -28,6 +30,10 @@ interface Props {
   onToggleSearch: () => void;
   showDelta: boolean;
   setShowDelta: (v: boolean) => void;
+  showMinimap: boolean;
+  setShowMinimap: (v: boolean) => void;
+  minimapAxis: MinimapAxis;
+  setMinimapAxis: (v: MinimapAxis) => void;
   contextLines: number;
   setContextLines: (v: number) => void;
 }
@@ -80,6 +86,10 @@ export default function LogSummarySidebar({
   onToggleSearch,
   showDelta,
   setShowDelta,
+  showMinimap,
+  setShowMinimap,
+  minimapAxis,
+  setMinimapAxis,
   contextLines,
   setContextLines,
 }: Props) {
@@ -229,6 +239,53 @@ export default function LogSummarySidebar({
                 <span className="text-xs text-muted-foreground">Time since the previous row</span>
               </div>
             </label>
+
+            <label htmlFor="toggle-show-minimap" className="flex cursor-pointer items-start gap-2.5">
+              <Checkbox
+                id="toggle-show-minimap"
+                checked={showMinimap}
+                onCheckedChange={(checked: boolean | "indeterminate") => setShowMinimap(!!checked)}
+                className="mt-0.5"
+              />
+              <div className="grid gap-0.5">
+                <span className="text-sm leading-none font-medium">Show minimap</span>
+                <span className="text-xs text-muted-foreground">Log levels across the file, click to jump</span>
+              </div>
+            </label>
+
+            {showMinimap && (
+              <div className="-mt-1 flex items-center gap-2 pl-6.5">
+                <div
+                  role="radiogroup"
+                  aria-label="Minimap axis"
+                  className="inline-flex rounded-md border bg-background p-0.5 text-xs"
+                >
+                  {(
+                    [
+                      ["line", "By line", "Every column covers the same number of lines"],
+                      ["time", "By time", "Every column covers the same time span: quiet periods show as gaps"],
+                    ] as const
+                  ).map(([value, label, title]) => (
+                    <button
+                      key={value}
+                      type="button"
+                      role="radio"
+                      aria-checked={minimapAxis === value}
+                      title={title}
+                      onClick={() => setMinimapAxis(value)}
+                      className={cn(
+                        "rounded-[5px] px-2.5 py-1 font-medium transition-colors",
+                        minimapAxis === value
+                          ? "bg-secondary text-foreground shadow-xs"
+                          : "text-muted-foreground hover:text-foreground"
+                      )}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
 
             <div className="flex items-center gap-2">
               <div className="grid flex-1 gap-0.5">

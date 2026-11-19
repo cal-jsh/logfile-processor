@@ -8,7 +8,8 @@
 //! Line numbers are 0-based here. Rows are 0-based positions in a view.
 
 use crate::logfile::index::{LineIter, LogFile};
-use std::sync::{Arc, Mutex};
+use crate::logfile::timeline::TimeBins;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 pub struct MatchSet {
@@ -19,12 +20,14 @@ pub struct MatchSet {
     pub scan_time: Duration,
     /// The most recently built view (the viewer asks for the same context repeatedly).
     last_view: Mutex<Option<Arc<View>>>,
+    /// The matches binned by time (minimap "by time"), computed on first use.
+    pub time_bins: OnceLock<Arc<TimeBins>>,
 }
 
 impl MatchSet {
     pub fn new(ranges: Vec<(u64, u64)>, line_count: u64, scan_time: Duration) -> Self {
         let match_count = ranges.iter().map(|r| r.1 - r.0).sum();
-        Self { ranges, match_count, line_count, scan_time, last_view: Mutex::new(None) }
+        Self { ranges, match_count, line_count, scan_time, last_view: Mutex::new(None), time_bins: OnceLock::new() }
     }
 
     pub fn match_count(&self) -> u64 {
@@ -33,6 +36,11 @@ impl MatchSet {
 
     pub fn line_count(&self) -> u64 {
         self.line_count
+    }
+
+    /// The matching lines as sorted, disjoint half-open ranges.
+    pub fn ranges(&self) -> &[(u64, u64)] {
+        &self.ranges
     }
 
     pub fn is_match(&self, line: u64) -> bool {

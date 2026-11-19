@@ -9,6 +9,7 @@ import { Separator } from "../components/ui/separator";
 import { colorMap, LEVEL_ORDER } from "../lib/colorMap";
 import { Filter, Layers, Tag, X } from "lucide-react";
 import { cn } from "@/lib/utils";
+import type { MinimapAxis } from "../components/Minimap";
 
 interface DashboardProps {
     sessionId: string;
@@ -33,6 +34,37 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
     const [debouncedKeywords, setDebouncedKeywords] = useState<string>("");
 
     const [showDelta, setShowDelta] = useState(false); // controls delta display
+    // level minimap above the rows; remembered per browser
+    const [showMinimap, setShowMinimapState] = useState<boolean>(() => {
+        try {
+            return localStorage.getItem("logviewer.showMinimap") !== "false";
+        } catch {
+            return true;
+        }
+    });
+    const [minimapAxis, setMinimapAxisState] = useState<MinimapAxis>(() => {
+        try {
+            return localStorage.getItem("logviewer.minimapAxis") === "time" ? "time" : "line";
+        } catch {
+            return "line";
+        }
+    });
+    const setMinimapAxis = (v: MinimapAxis) => {
+        setMinimapAxisState(v);
+        try {
+            localStorage.setItem("logviewer.minimapAxis", v);
+        } catch {
+            /* storage unavailable: keep it for this session only */
+        }
+    };
+    const setShowMinimap = (v: boolean) => {
+        setShowMinimapState(v);
+        try {
+            localStorage.setItem("logviewer.showMinimap", String(v));
+        } catch {
+            /* storage unavailable: keep it for this session only */
+        }
+    };
     const [searchOpen, setSearchOpen] = useState(false); // floating search panel
 
     // Debounce filters
@@ -104,6 +136,10 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
                 onToggleSearch={() => setSearchOpen((o) => !o)}
                 showDelta={showDelta}
                 setShowDelta={setShowDelta}
+                showMinimap={showMinimap}
+                setShowMinimap={setShowMinimap}
+                minimapAxis={minimapAxis}
+                setMinimapAxis={setMinimapAxis}
                 contextLines={contextLines}
                 setContextLines={setContextLines}
             />
@@ -212,6 +248,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
                             filterParams={filterParams}
                             context={contextLines}
                             showDelta={showDelta}
+                            showMinimap={showMinimap}
+                            minimapAxis={minimapAxis}
                             searchOpen={searchOpen}
                             onSearchOpenChange={setSearchOpen}
                         />
