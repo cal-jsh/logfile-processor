@@ -1,5 +1,5 @@
 // local
-use crate::parsing::parser::LOG_REGEX;
+use crate::parsing::parser::{split_log_line, LogFields};
 // std
 use std::collections::VecDeque;
 
@@ -29,12 +29,9 @@ impl LineFilter {
     /// Whether the line matches all active criteria.
     /// Lines that don't follow the `[ts] [LEVEL] [domain] message` format never match.
     pub fn matches(&self, line: &str) -> bool {
-        let Some(caps) = LOG_REGEX.captures(line) else {
+        let Some(LogFields { level, domain, message, .. }) = split_log_line(line) else {
             return false;
         };
-        let level = caps.name("level").map_or("", |m| m.as_str());
-        let domain = caps.name("domain").map_or("", |m| m.as_str());
-        let message = caps.name("message").map_or("", |m| m.as_str());
 
         let level_ok = self
             .levels
@@ -53,6 +50,7 @@ impl LineFilter {
 }
 
 /// One line selected for output.
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OutputLine {
     /// 1-based line number in the original file.
@@ -66,6 +64,11 @@ pub struct OutputLine {
 ///
 /// Feed every line of the file, in order, to [`ContextWindow::push`]. Each line is
 /// emitted at most once, in file order, and overlapping windows are merged.
+///
+/// The server now expands context from match line numbers instead
+/// (`logfile::view::View`), so that changing the context needs no rescan. This
+/// streaming version is kept as the reference those semantics are tested against.
+#[cfg_attr(not(test), allow(dead_code))]
 pub struct ContextWindow {
     context: usize,
     /// Unemitted lines just before the current position (at most `context`).
@@ -74,6 +77,7 @@ pub struct ContextWindow {
     after_remaining: usize,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 impl ContextWindow {
     pub fn new(context: usize) -> Self {
         Self {

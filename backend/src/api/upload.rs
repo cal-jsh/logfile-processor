@@ -1,7 +1,8 @@
 // local
-use crate::log_storage::save_user_log;
+use crate::log_storage::{save_user_log, Session};
+use crate::logfile::index::LogFile;
+use crate::logfile::scan::summarize;
 use crate::model::upload_response::UploadResponse;
-use crate::parsing::parser::parse_log;
 // axum
 use axum::{
     extract::Multipart, http::StatusCode, response::IntoResponse, routing::post, Json, Router,
@@ -17,6 +18,7 @@ use utoipa::ToSchema;
 use tracing::{debug, error, info, trace};
 // std
 use std::path::PathBuf;
+use std::time::Instant;
 
 /// Build the router
 pub fn router() -> Router {
@@ -84,6 +86,13 @@ pub async fn upload_handler(mut multipart: Multipart) -> impl IntoResponse {
             }
         }
 
+        // tokio::fs::File finishes writes in the background; flush so the whole file is
+        // on disk before it is memory-mapped below.
+        if let Err(e) = file.flush().await {
+            error!("Failed flushing file: {:?}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed writing file").into_response();
+        }
+
         debug!("Finished writing file to {:?}", file_path);
 
         uploaded = true;
@@ -94,33 +103,48 @@ pub async fn upload_handler(mut multipart: Multipart) -> impl IntoResponse {
         return (StatusCode::BAD_REQUEST, "No file uploaded").into_response();
     }
 
-    // Save session info (store path)
-    save_user_log(&session_id, file_path.to_string_lossy().to_string());
-
-    // Read the log file to parse it
-    let log_text = match tokio::fs::read_to_string(&file_path).await {
-        Ok(text) => text,
+    // Memory-map the file, build the sparse line index and the summary, in parallel,
+    // off the async runtime. The file is never read into a String.
+    let path = file_path.clone();
+    let opened = tokio::task::spawn_blocking(move || {
+        let file = LogFile::open(&path)?;
+        let started = Instant::now();
+        let summary = summarize(&file);
+        Ok::<_, std::io::Error>((file, summary, started.elapsed()))
+    })
+    .await;
+    let (file, summary, summary_time) = match opened {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => {
+            error!("Failed to open log file for indexing: {:?}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to open log file").into_response();
+        }
         Err(e) => {
-            error!("Failed to read log file for parsing: {:?}", e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to read log file for parsing",
-            )
-                .into_response();
+            error!("Indexing task failed: {:?}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to index log file").into_response();
         }
     };
-
-    // Parse the log file to get the summary
-    let summary = parse_log(&log_text, None, None);
+    let index_ms = file.index_time.as_secs_f64() * 1000.0;
+    let summary_ms = summary_time.as_secs_f64() * 1000.0;
     info!(
-        "Finished parsing log for session {}. Summary: {:?}",
-        session_id, summary
+        "Indexed {} lines ({} bytes) in {:.1} ms, summary in {:.1} ms, session {}",
+        file.line_count(),
+        file.len(),
+        index_ms,
+        summary_ms,
+        session_id
     );
+    debug!("Summary: {:?}", summary);
+
+    // Save the session (indexed file + result cache)
+    save_user_log(&session_id, Session::new(file_path, file));
 
     // Respond with session ID and the actual summary
     Json(UploadResponse {
         session_id,
         summary,
+        index_ms,
+        summary_ms,
     })
     .into_response()
 }

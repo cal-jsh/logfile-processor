@@ -54,6 +54,11 @@ export default function LogSummarySidebar({ summary }: Props) {
             <SidebarGroupLabel>Total lines</SidebarGroupLabel>
             <SidebarGroupContent>
               <div className="font-mono">{summary.total_lines.toLocaleString()}</div>
+              {summary.line_count != null && summary.line_count !== summary.total_lines && (
+                <div className="text-muted-foreground text-xs">
+                  {summary.line_count.toLocaleString()} lines in the file, incl. lines not in the log format
+                </div>
+              )}
             </SidebarGroupContent>
           </SidebarGroup>
 

@@ -1,26 +1,69 @@
-import { useEffect, useRef, useState, useCallback } from "react";
-import { Virtuoso, VirtuosoHandle } from "react-virtuoso";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Input } from "./ui/input";
 import { Button } from "./ui/button";
 import { colorMap } from "../lib/colorMap";
 import { Spinner } from "./ui/spinner";
 import { Download } from "lucide-react";
 
-function extractMessage(raw: string) {
-  return raw
-    .replace(/^\[[^\]]+\]\s*/, "")                       // strip timestamp
-    .replace(/^\[(TRACE|DEBUG|INFO|WARN|ERROR)\]\s*/, "") // strip level
-    .replace(/^\[[^\]]+\]\s*/, "")                       // strip domain
-    .trim();
+/*
+ * Viewport-based log viewer.
+ *
+ * The backend keeps the filter result as line numbers and expands context lines on
+ * request, so the viewer never holds the result set. It only knows the row count and
+ * fetches the rows it shows, in pages, from /view/rows.
+ *
+ * Scrolling is custom (fixed row height, own scrollbar) instead of a DOM-height based
+ * virtual list: browsers cap element height at roughly 33 million pixels, which is
+ * about 1.5 million rows, and logs can have hundreds of millions.
+ */
+
+const ROW_HEIGHT = 22; // px, must match the row style below
+const PAGE_SIZE = 256; // rows per /view/rows request
+const OVERSCAN_PAGES = 1; // pages fetched above and below the visible ones
+const MAX_CACHED_PAGES = 64;
+const SEARCH_MIN = 2;
+
+/* ---------------- Types ---------------- */
+type Row = {
+  row: number;
+  line_number: number; // 1-based line in the file
+  text: string;
+  context: boolean;
+  truncated: boolean;
+};
+
+type ViewInfo = {
+  row_count: number;
+  match_count: number;
+  context: number;
+  line_count: number;
+  scan_ms: number;
+  cached: boolean;
+};
+
+type SearchHit = { row: number; line_number: number; text: string };
+
+type ParsedLine = {
+  timestamp?: string;
+  level?: string;
+  domain?: string;
+  message: string;
+};
+
+/* ---------------- Helpers ---------------- */
+// Same format as the backend's LOG_REGEX: [ts] [LEVEL] [domain] message
+const LINE_RE = /^\[([^\]]+)\]\s\[([^\]]+)\]\s\[([^\]]+)\]\s*(.*)$/s;
+
+function parseLine(text: string): ParsedLine {
+  const m = LINE_RE.exec(text);
+  if (!m) return { message: text };
+  return { timestamp: m[1], level: m[2], domain: m[3], message: m[4] };
 }
 
-/* ---------------- debounce helper ---------------- */
-function debounce<T extends (...args: any[]) => void>(fn: T, delay: number) {
-  let timer: number;
-  return (...args: Parameters<T>) => {
-    clearTimeout(timer);
-    timer = window.setTimeout(() => fn(...args), delay);
-  };
+function parseTime(ts: string | undefined): number | null {
+  if (!ts) return null;
+  const t = new Date(ts).getTime();
+  return Number.isFinite(t) ? t : null;
 }
 
 function formatDelta(ms: number): string {
@@ -29,347 +72,330 @@ function formatDelta(ms: number): string {
   else return `${(ms / 1000).toFixed(2)} s`;
 }
 
-/* ---------- Downloads ---------- */
-function downloadAsText(lines: NormalizedLog[]) {
-  const content = lines.map((l) => l.line).join("\n");
-  const blob = new Blob([content], { type: "text/plain" });
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = `logs_${new Date().toISOString().slice(0, 10)}.txt`;
-  a.click();
-  URL.revokeObjectURL(a.href);
+function clamp(v: number, lo: number, hi: number) {
+  return Math.min(Math.max(v, lo), hi);
 }
-
-function downloadAsCSV(lines: NormalizedLog[]) {
-  const header = "Line,Timestamp,Level,Domain,Matched,Context,Message";
-  const rows = lines.map((l) =>
-    [
-      l.idx + 1,
-      l.timestamp ?? "",
-      l.level ?? "",
-      l.domain ?? "",
-      l.matched ? "true" : "false",
-      l.context ? "true" : "false",
-      `"${(l.line || "").replace(/"/g, '\\"')}"`
-    ].join(",")
-  );
-  const content = [header, ...rows].join("\n");
-  const blob = new Blob([content], { type: "text/csv" });
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = `logs_${new Date().toISOString().slice(0, 10)}.csv`;
-  a.click();
-  URL.revokeObjectURL(a.href);
-}
-
-/* ---------------- Types ---------------- */
-type IncomingEvent = any; // whatever the backend sends (be permissive)
-
-/** Final event of a result stream, sent by the backend after the last line. */
-type StreamEnd = {
-  emitted: number;
-  maxLines: number;
-  truncated: boolean;
-};
-
-type NormalizedLog = {
-  line: string; // rendered line text
-  idx: number; // 0-based line index in the original file (server-provided), or local fallback
-  context: boolean;
-  matched: boolean;
-  timestamp?: string;
-  level?: string;
-  domain?: string;
-};
 
 /* ---------------- Component ---------------- */
 export const LogViewer = ({
-  url,
-  maxLines = 2000,
+  baseUrl,
+  sessionId,
+  filterParams,
+  context,
   showDelta,
 }: {
-  url: string;
-  maxLines?: number;
+  baseUrl: string;
+  sessionId: string;
+  /** Encoded filter query parameters, e.g. "&levels=ERROR&keywords=foo" */
+  filterParams: string;
+  context: number;
   showDelta: boolean;
 }) => {
-  const linesRef = useRef<NormalizedLog[]>([]);
-  const bufferRef = useRef<NormalizedLog[]>([]);
-  const evtRef = useRef<EventSource | null>(null);
-  const nextIdxRef = useRef<number>(0); // used when server doesn't provide idx
+  const viewParams = `session_id=${encodeURIComponent(sessionId)}${filterParams}&context=${context}`;
 
-  const [, forceRender] = useState(0);
-  const [isConnecting, setIsConnecting] = useState(false);
-  const [isFollowing, setIsFollowing] = useState(true);
-  const [streamEnd, setStreamEnd] = useState<StreamEnd | null>(null);
+  const [info, setInfo] = useState<ViewInfo | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  /* ---------------- Search ---------------- */
-  const [search, setSearch] = useState("");
-  const [searchResults, setSearchResults] = useState<{ idx: number; text: string }[]>(
-    []
+  // first visible row; fractional for smooth scrolling
+  const [top, setTop] = useState(0);
+  const [viewportHeight, setViewportHeight] = useState(600);
+  const [highlightRow, setHighlightRow] = useState<number | null>(null);
+
+  const pagesRef = useRef<Map<number, Row[]>>(new Map());
+  const inflightRef = useRef<Map<number, AbortController>>(new Map());
+  const [, setPagesVersion] = useState(0);
+
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const trackRef = useRef<HTMLDivElement>(null);
+
+  const visibleRows = Math.max(1, Math.floor(viewportHeight / ROW_HEIGHT));
+  const rowCount = info?.row_count ?? 0;
+  const maxTop = Math.max(0, rowCount - visibleRows);
+
+  const scrollTo = useCallback(
+    (row: number) => setTop(clamp(row, 0, maxTop)),
+    [maxTop]
   );
-  const [isSearching, setIsSearching] = useState(false);
 
-  const debouncedSetSearch = useCallback(debounce((v) => setSearch(v), 150), []);
+  /* ---------------- Load the view (row count) ----------------
+     Re-runs when the filter or the context changes. Changing only the context reuses
+     the backend's cached scan, and we keep the same file line at the top. */
+  const prevFilterRef = useRef<string | null>(null);
+  const topLineRef = useRef<number | null>(null);
 
-  const yieldControl = () =>
-    new Promise((resolve) =>
-      "requestIdleCallback" in window
-        ? (window as any).requestIdleCallback(resolve)
-        : setTimeout(resolve, 0)
+  useEffect(() => {
+    const ctrl = new AbortController();
+    const anchorLine = prevFilterRef.current === filterParams ? topLineRef.current : null;
+    prevFilterRef.current = filterParams;
+
+    // drop rows of the previous view
+    inflightRef.current.forEach((c) => c.abort());
+    inflightRef.current.clear();
+    pagesRef.current = new Map();
+    setLoading(true);
+    setError(null);
+    setHighlightRow(null);
+
+    (async () => {
+      try {
+        const res = await fetch(`${baseUrl}/view?${viewParams}`, { signal: ctrl.signal });
+        if (res.status === 409) return; // superseded by a newer filter
+        if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+        const v: ViewInfo = await res.json();
+        let start = 0;
+        if (anchorLine != null) {
+          const r = await fetch(`${baseUrl}/view/row_of_line?${viewParams}&line=${anchorLine}`, {
+            signal: ctrl.signal,
+          });
+          if (r.ok) start = (await r.json()).row;
+        }
+        setInfo(v);
+        setTop(clamp(start, 0, Math.max(0, v.row_count - visibleRows)));
+        setLoading(false);
+      } catch (e: any) {
+        if (e?.name === "AbortError") return;
+        setError(String(e?.message ?? e));
+        setLoading(false);
+      }
+    })();
+    return () => ctrl.abort();
+    // visibleRows is read once for the initial clamp only
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [baseUrl, viewParams, filterParams]);
+
+  /* ---------------- Fetch visible pages ---------------- */
+  useEffect(() => {
+    if (!info || loading || rowCount === 0) return;
+    const firstPage = Math.max(0, Math.floor(top / PAGE_SIZE) - OVERSCAN_PAGES);
+    const lastPage = Math.min(
+      Math.floor((rowCount - 1) / PAGE_SIZE),
+      Math.floor((top + visibleRows) / PAGE_SIZE) + OVERSCAN_PAGES
     );
 
-  /* ---------------- Normalize helper ----------------
-     Turn arbitrary incoming JSON (or string) into NormalizedLog.
-     - If backend provides fields, use them.
-     - If not, parse fields from the `line` string.
-  --------------------------------------------------*/
-  function normalizeIncoming(objOrStr: IncomingEvent): NormalizedLog | null {
-    // Accept either string payload or JSON object
-    let obj: any;
-    if (typeof objOrStr === "string") {
-      // try to parse as JSON; if that fails, treat it as raw line
-      try {
-        obj = JSON.parse(objOrStr);
-      } catch {
-        obj = { line: objOrStr };
+    // abort requests for pages that scrolled far away
+    inflightRef.current.forEach((c, p) => {
+      if (p < firstPage - 2 || p > lastPage + 2) {
+        c.abort();
+        inflightRef.current.delete(p);
       }
-    } else {
-      obj = objOrStr ?? {};
-    }
+    });
 
-    // `line` final text: prefer obj.line, fallback to obj.data or the raw string
-    const rawLine: string = (obj.line ?? obj.data ?? "").toString();
-
-    if (!rawLine) {
-      // nothing usable
-      return null;
-    }
-
-    // idx: prefer the server's 1-based line_number (real position in the file),
-    // then a provided idx, otherwise assign monotonic local index
-    let idx: number;
-    if (typeof obj.line_number === "number" && Number.isFinite(obj.line_number)) {
-      idx = obj.line_number - 1;
-    } else if (typeof obj.idx === "number" && Number.isFinite(obj.idx)) {
-      idx = obj.idx;
-      // Also keep nextIdxRef ahead of server idx to avoid collisions
-      if (idx >= nextIdxRef.current) nextIdxRef.current = idx + 1;
-    } else {
-      idx = nextIdxRef.current++;
-    }
-
-    // context and matched logic:
-    const contextProvided = typeof obj.context === "boolean";
-    const matchedProvided = typeof obj.matched === "boolean";
-    const context = contextProvided ? obj.context : false;
-    // If matched is provided, trust it. If not provided but context is provided, matched = !context.
-    // If neither provided, default matched=false (safe).
-    const matched = matchedProvided ? obj.matched : (contextProvided ? !context : false);
-
-    // timestamp: prefer obj.timestamp, otherwise parse from line beginning like "[2025-..]"
-    let timestamp: string | undefined = undefined;
-    if (typeof obj.timestamp === "string" && obj.timestamp.trim() !== "") {
-      timestamp = obj.timestamp;
-    } else {
-      const tsMatch = rawLine.match(/^\[([^\]]+)\]/);
-      if (tsMatch) timestamp = tsMatch[1];
-    }
-
-    // level: prefer obj.level, otherwise parse bracketed level like [INFO]
-    let level: string | undefined = undefined;
-    if (typeof obj.level === "string" && obj.level.trim() !== "") {
-      level = obj.level;
-    } else {
-      const levelMatch = rawLine.match(/\[(TRACE|DEBUG|INFO|WARN|ERROR)\]/);
-      if (levelMatch) level = levelMatch[1];
-    }
-
-    // domain: prefer obj.domain, otherwise parse the next bracketed token after level/timestamp
-    let domain: string | undefined = undefined;
-    if (typeof obj.domain === "string" && obj.domain.trim() !== "") {
-      domain = obj.domain;
-    } else {
-      // try to find the first bracket after the timestamp and level
-      // remove timestamp and level from the start then look for [domain] or bare token
-      const afterTs = rawLine.replace(/^\[[^\]]+\]\s*/, "");
-      const afterLevel = afterTs.replace(/\[(TRACE|DEBUG|INFO|WARN|ERROR)\]\s*/, "");
-      const domainMatch = afterLevel.match(/^\[([^\]]+)\]|^(\S+)\s/);
-      if (domainMatch) {
-        domain = (domainMatch[1] ?? domainMatch[2]) as string;
-      }
-    }
-
-    const normalized: NormalizedLog = {
-      line: rawLine,
-      idx,
-      context,
-      matched,
-      timestamp,
-      level,
-      domain,
-    };
-
-    return normalized;
-  }
-
-  /* ---------------- Async Search ---------------- */
-  useEffect(() => {
-    const MIN = 2,
-      CHUNK = 400,
-      LIMIT = 1000;
-
-    if (!search || search.length < MIN) {
-      setSearchResults([]);
-      setIsSearching(false);
-      return;
-    }
-
-    let cancelled = false;
-    setIsSearching(true);
-    setSearchResults([]);
-
-    const needle = search.toLowerCase();
-
-    const run = async () => {
-      const arr = linesRef.current;
-      const out: { idx: number; text: string }[] = [];
-
-      for (let i = 0; i < arr.length; i += CHUNK) {
-        if (cancelled) return;
-
-        const batch = arr.slice(i, i + CHUNK);
-        for (let j = 0; j < batch.length; j++) {
-          if (cancelled) return;
-          const obj = batch[j];
-          if ((obj.line || "").toLowerCase().includes(needle)) {
-            out.push({ idx: obj.idx, text: obj.line });
-            if (out.length >= LIMIT) break;
+    const pages = pagesRef.current;
+    for (let p = firstPage; p <= lastPage; p++) {
+      if (pages.has(p) || inflightRef.current.has(p)) continue;
+      const ctrl = new AbortController();
+      inflightRef.current.set(p, ctrl);
+      const myPages = pages;
+      fetch(`${baseUrl}/view/rows?${viewParams}&first_row=${p * PAGE_SIZE}&count=${PAGE_SIZE}`, {
+        signal: ctrl.signal,
+      })
+        .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+        .then((data: { rows: Row[] }) => {
+          if (pagesRef.current !== myPages) return; // view changed meanwhile
+          myPages.set(p, data.rows);
+          // keep the cache bounded: evict pages farthest from the current one
+          if (myPages.size > MAX_CACHED_PAGES) {
+            const center = Math.floor(top / PAGE_SIZE);
+            const far = [...myPages.keys()].sort(
+              (a, b) => Math.abs(b - center) - Math.abs(a - center)
+            );
+            for (const k of far.slice(0, myPages.size - MAX_CACHED_PAGES)) myPages.delete(k);
           }
-        }
+          setPagesVersion((v) => v + 1);
+        })
+        .catch(() => { })
+        .finally(() => {
+          if (inflightRef.current.get(p) === ctrl) inflightRef.current.delete(p);
+        });
+    }
+  }, [info, loading, top, visibleRows, rowCount, baseUrl, viewParams]);
 
-        await yieldControl();
-        if (out.length >= LIMIT) break;
-      }
+  const getRow = (r: number): Row | undefined =>
+    pagesRef.current.get(Math.floor(r / PAGE_SIZE))?.[r % PAGE_SIZE];
 
-      if (!cancelled) {
-        setSearchResults(out);
-        setIsSearching(false);
-      }
+  /* ---------------- Viewport size ---------------- */
+  useEffect(() => {
+    const el = viewportRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setViewportHeight(el.clientHeight));
+    ro.observe(el);
+    setViewportHeight(el.clientHeight);
+    return () => ro.disconnect();
+  }, []);
+
+  /* ---------------- Wheel (vertical only; horizontal stays native) ---------------- */
+  useEffect(() => {
+    const el = viewportRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) return;
+      e.preventDefault();
+      const rows =
+        e.deltaMode === 1 ? e.deltaY : e.deltaMode === 2 ? e.deltaY * visibleRows : e.deltaY / ROW_HEIGHT;
+      setTop((t) => clamp(t + rows, 0, maxTop));
     };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [maxTop, visibleRows]);
 
-    run();
-    return () => {
-      cancelled = true;
-      setIsSearching(false);
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    const step: Record<string, number> = {
+      ArrowDown: 1,
+      ArrowUp: -1,
+      PageDown: visibleRows - 1,
+      PageUp: -(visibleRows - 1),
     };
-  }, [search]);
-
-  const virtuosoRef = useRef<VirtuosoHandle>(null);
-  const jumpToIndex = (absIdx: number) => {
-    const i = linesRef.current.findIndex((l) => l.idx === absIdx);
-    if (i >= 0) {
-      virtuosoRef.current?.scrollToIndex({
-        index: i,
-        align: "center",
-        behavior: "smooth",
-      });
+    if (e.key in step) {
+      e.preventDefault();
+      setTop((t) => clamp(Math.round(t) + step[e.key], 0, maxTop));
+    } else if (e.key === "Home") {
+      e.preventDefault();
+      setTop(0);
+    } else if (e.key === "End") {
+      e.preventDefault();
+      setTop(maxTop);
     }
   };
 
-  /* ---------------- Reset on URL change ---------------- */
-  const prevUrl = useRef<string | null>(null);
+  /* ---------------- Scrollbar ---------------- */
+  const trackHeight = viewportHeight;
+  const thumbHeight =
+    rowCount > 0 ? clamp((trackHeight * visibleRows) / rowCount, 24, trackHeight) : trackHeight;
+  const thumbTop = maxTop > 0 ? (top / maxTop) * (trackHeight - thumbHeight) : 0;
+  const dragRef = useRef<{ y: number; top: number } | null>(null);
+
+  const onThumbDown = (e: React.PointerEvent) => {
+    e.stopPropagation();
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    dragRef.current = { y: e.clientY, top };
+  };
+  const onThumbMove = (e: React.PointerEvent) => {
+    if (!dragRef.current || trackHeight <= thumbHeight) return;
+    const dy = e.clientY - dragRef.current.y;
+    setTop(clamp(dragRef.current.top + (dy / (trackHeight - thumbHeight)) * maxTop, 0, maxTop));
+  };
+  const onThumbUp = () => {
+    dragRef.current = null;
+  };
+  const onTrackDown = (e: React.PointerEvent) => {
+    const rect = trackRef.current?.getBoundingClientRect();
+    if (!rect || trackHeight <= thumbHeight) return;
+    const y = e.clientY - rect.top - thumbHeight / 2;
+    setTop(clamp((y / (trackHeight - thumbHeight)) * maxTop, 0, maxTop));
+  };
+
+  /* ---------------- Search inside the results (backend) ---------------- */
+  const [searchInput, setSearchInput] = useState("");
+  const [search, setSearch] = useState("");
+  const [searchResults, setSearchResults] = useState<SearchHit[]>([]);
+  const [searchComplete, setSearchComplete] = useState(true);
+  const [isSearching, setIsSearching] = useState(false);
+
   useEffect(() => {
-    if (prevUrl.current !== url) {
-      prevUrl.current = url;
-      linesRef.current = [];
-      bufferRef.current = [];
-      nextIdxRef.current = 0;
-      setStreamEnd(null);
-      setIsConnecting(true);
-      forceRender((r) => r + 1);
-    }
-  }, [url]);
+    const t = setTimeout(() => setSearch(searchInput), 300);
+    return () => clearTimeout(t);
+  }, [searchInput]);
 
-  /* ---------------- SSE ---------------- */
   useEffect(() => {
-    // close previous
-    if (evtRef.current) {
-      try {
-        evtRef.current.close();
-      } catch { }
-      evtRef.current = null;
+    setSearchResults([]);
+    if (!search || search.length < SEARCH_MIN || loading) {
+      setIsSearching(false);
+      return;
     }
+    const ctrl = new AbortController();
+    setIsSearching(true);
+    fetch(`${baseUrl}/view/search?${viewParams}&q=${encodeURIComponent(search)}`, {
+      signal: ctrl.signal,
+    })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+      .then((data: { hits: SearchHit[]; complete: boolean }) => {
+        setSearchResults(data.hits);
+        setSearchComplete(data.complete);
+        setIsSearching(false);
+      })
+      .catch((e) => {
+        if (e?.name !== "AbortError") setIsSearching(false);
+      });
+    return () => ctrl.abort();
+  }, [search, viewParams, baseUrl, loading]);
 
-    // Ask the backend for at most maxLines result lines; it reports truncation in its end event.
-    const es = new EventSource(`${url}&max_lines=${maxLines}`);
-    evtRef.current = es;
+  const jumpToRow = (row: number) => {
+    scrollTo(row - Math.floor(visibleRows / 2));
+    setHighlightRow(row);
+    viewportRef.current?.focus();
+  };
 
-    es.onopen = () => setIsConnecting(false);
+  /* ---------------- Go to line ---------------- */
+  const [gotoInput, setGotoInput] = useState("");
+  const goToLine = async () => {
+    const line = parseInt(gotoInput, 10);
+    if (!Number.isFinite(line) || line < 1) return;
+    const r = await fetch(`${baseUrl}/view/row_of_line?${viewParams}&line=${line}`);
+    if (!r.ok) return;
+    const { row } = await r.json();
+    if (row < rowCount) jumpToRow(row);
+  };
 
-    es.onmessage = (e) => {
-      // Try to parse JSON; if not JSON assume raw line string
-      let parsed: any = null;
-      try {
-        parsed = JSON.parse(e.data);
-      } catch {
-        // not JSON — we will treat e.data as raw line
-        parsed = e.data;
-      }
-
-      if (parsed && typeof parsed === "object" && parsed.type === "end") {
-        setStreamEnd({
-          emitted: Number(parsed.emitted) || 0,
-          maxLines: Number(parsed.max_lines) || maxLines,
-          truncated: parsed.truncated === true,
-        });
-        // All results received. Close so the browser does not reconnect and re-run the query.
-        try {
-          es.close();
-        } catch { }
-        return;
-      }
-
-      const normalized = normalizeIncoming(parsed);
-      if (normalized) {
-        bufferRef.current.push(normalized);
-      }
-    };
-
-    const flush = setInterval(() => {
-      if (bufferRef.current.length === 0) return;
-
-      // append buffered normalized entries. The backend already stops at maxLines;
-      // this cap is only a safety net, and keeps the first lines rather than the last.
-      const combined = [...linesRef.current, ...bufferRef.current];
-      if (combined.length > maxLines) {
-        linesRef.current = combined.slice(0, maxLines);
-        setStreamEnd((prev) => prev ?? { emitted: maxLines, maxLines, truncated: true });
-      } else {
-        linesRef.current = combined;
-      }
-      bufferRef.current = [];
-
-      forceRender((r) => r + 1);
-    }, 50);
-
-    es.onerror = () => {
-      setIsConnecting(false);
-      clearInterval(flush);
-      try {
-        es.close();
-      } catch { }
-    };
-
-    return () => {
-      clearInterval(flush);
-      try {
-        es.close();
-      } catch { }
-    };
-  }, [url, maxLines]);
+  /* ---------------- Downloads (streamed by the backend) ---------------- */
+  const download = (format: "txt" | "csv") => {
+    const a = document.createElement("a");
+    a.href = `${baseUrl}/view/export?${viewParams}&format=${format}`;
+    a.click();
+  };
 
   /* ---------------- Render ---------------- */
-  let prevTs = 0;
+  const firstRow = Math.floor(top);
+  const offsetPx = (top - firstRow) * ROW_HEIGHT;
+  const renderCount = Math.min(visibleRows + 2, Math.max(0, rowCount - firstRow));
+
+  // remember the line at the top, to keep the position when the context changes
+  const topRowData = getRow(firstRow);
+  topLineRef.current = topRowData ? topRowData.line_number : topLineRef.current;
+
+  const rows: JSX.Element[] = [];
+  for (let i = 0; i < renderCount; i++) {
+    const r = firstRow + i;
+    const row = getRow(r);
+    if (!row) {
+      rows.push(
+        <div key={r} className="font-mono px-3 text-gray-600" style={{ height: ROW_HEIGHT, lineHeight: `${ROW_HEIGHT}px` }}>
+          …
+        </div>
+      );
+      continue;
+    }
+    const parsed = parseLine(row.text);
+
+    // time delta to the previous row of the view (not the previously rendered one)
+    let delta = "";
+    if (showDelta && r > 0) {
+      const prev = getRow(r - 1);
+      const t = parseTime(parsed.timestamp);
+      const pt = prev ? parseTime(parseLine(prev.text).timestamp) : null;
+      if (t != null && pt != null) delta = formatDelta(t - pt);
+    }
+
+    rows.push(
+      <div
+        key={r}
+        className={`font-mono px-3 whitespace-pre ${row.context ? "opacity-60" : ""} ${r === highlightRow ? "bg-yellow-500/30" : ""}`}
+        style={{ height: ROW_HEIGHT, lineHeight: `${ROW_HEIGHT}px` }}
+      >
+        <span className="text-gray-500">{row.line_number}</span>:{" "}
+        {parsed.timestamp && `[${parsed.timestamp}]`}{" "}
+        {delta && <span className="text-gray-500 italic ml-1">(+{delta})</span>}{" "}
+        {parsed.level && (
+          <span style={{ color: colorMap[parsed.level] || "white", fontWeight: "bold" }}>
+            [{parsed.level}]
+          </span>
+        )}{" "}
+        {parsed.domain && <span className="text-blue-400">[{parsed.domain}]</span>}{" "}
+        <span>{parsed.message}</span>
+        {row.truncated && <span className="text-gray-500 italic"> … (line cut for display)</span>}
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-[750px] w-full border rounded overflow-hidden">
@@ -377,64 +403,64 @@ export const LogViewer = ({
       <div className="w-80 border-r bg-muted/10 p-2 flex flex-col">
         {/* Downloads */}
         <div className="flex gap-2 mb-2">
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={!linesRef.current.length}
-            onClick={() => downloadAsText(linesRef.current)}
-          >
+          <Button size="sm" variant="outline" disabled={!rowCount} onClick={() => download("txt")}>
             <Download className="w-4 h-4 mr-1" />
             Text
           </Button>
 
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={!linesRef.current.length}
-            onClick={() => downloadAsCSV(linesRef.current)}
-          >
+          <Button size="sm" variant="outline" disabled={!rowCount} onClick={() => download("csv")}>
             <Download className="w-4 h-4 mr-1" />
             CSV
+          </Button>
+        </div>
+
+        <div className="flex gap-2 mb-2">
+          <Input
+            placeholder="Go to line…"
+            inputMode="numeric"
+            value={gotoInput}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setGotoInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") goToLine();
+            }}
+          />
+          <Button size="sm" variant="outline" onClick={goToLine} disabled={!rowCount}>
+            Go
           </Button>
         </div>
 
         <Input
           placeholder="Search…"
           className="mb-2"
-          onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-            debouncedSetSearch(e.target.value)
-          }
+          value={searchInput}
+          onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSearchInput(e.target.value)}
         />
 
         {/* Results */}
         <div className="flex-1 overflow-auto border rounded p-1">
           {isSearching && (
-            <div className="text-sm text-muted-foreground px-1 py-1">
-              Searching…
-            </div>
+            <div className="text-sm text-muted-foreground px-1 py-1">Searching…</div>
           )}
 
-          {!isSearching && search.length >= 2 && searchResults.length === 0 && (
-            <div className="text-sm text-muted-foreground px-1 py-1">
-              No matches found
-            </div>
+          {!isSearching && search.length >= SEARCH_MIN && searchResults.length === 0 && (
+            <div className="text-sm text-muted-foreground px-1 py-1">No matches found</div>
           )}
 
           {searchResults.length > 0 && (
             <div className="text-xs text-muted-foreground px-1 pb-1">
-              Showing {searchResults.length} results
+              {searchComplete
+                ? `Showing ${searchResults.length} results`
+                : `Showing the first ${searchResults.length} results`}
             </div>
           )}
 
           {searchResults.map((r) => (
             <div
-              key={r.idx}
+              key={r.row}
               className="px-2 py-1 text-sm font-mono cursor-pointer rounded hover:bg-accent"
-              onClick={() => jumpToIndex(r.idx)}
+              onClick={() => jumpToRow(r.row)}
             >
-              <span className="font-bold text-primary mr-2">
-                #{r.idx + 1}
-              </span>
+              <span className="font-bold text-primary mr-2">#{r.line_number}</span>
               {r.text}
             </div>
           ))}
@@ -443,64 +469,51 @@ export const LogViewer = ({
 
       {/* RIGHT PANEL */}
       <div className="flex-1 relative flex flex-col min-w-0">
-        {isConnecting && (
+        {loading && (
           <div className="absolute inset-0 bg-black/40 flex items-center justify-center z-50">
             <Spinner className="w-8 h-8 text-white" />
           </div>
         )}
 
-        {streamEnd?.truncated && (
+        <div role="status" className="text-xs px-3 py-1 border-b bg-muted/30 text-muted-foreground">
+          {error
+            ? `Error: ${error}`
+            : info
+              ? `${info.match_count.toLocaleString()} matching lines` +
+              (info.context > 0 ? `, ${info.row_count.toLocaleString()} rows with ±${info.context} context` : "") +
+              ` · ${info.line_count.toLocaleString()} lines ` +
+              (info.cached ? "(cached result, no rescan)" : `scanned in ${Math.round(info.scan_ms).toLocaleString()} ms`) +
+              (rowCount > 0 ? ` · rows ${(firstRow + 1).toLocaleString()}–${Math.min(rowCount, firstRow + visibleRows).toLocaleString()}` : "")
+              : "Loading…"}
+        </div>
+
+        <div className="flex flex-1 min-h-0" style={{ background: "#1e1e1e", color: "white" }}>
           <div
-            role="status"
-            className="bg-amber-500 text-black text-sm px-3 py-1"
+            ref={viewportRef}
+            tabIndex={0}
+            onKeyDown={onKeyDown}
+            className="flex-1 min-w-0 overflow-x-auto overflow-y-hidden outline-none text-sm"
           >
-            Showing only the first {streamEnd.maxLines.toLocaleString()} result lines; more lines
-            match these filters. Narrow the levels, domains or keywords to see the rest.
+            <div style={{ transform: `translateY(${-offsetPx}px)`, minWidth: "max-content" }}>{rows}</div>
           </div>
-        )}
 
-        <Virtuoso
-          ref={virtuosoRef}
-          style={{ flex: 1, minHeight: 0, background: "#1e1e1e", color: "white" }}
-          data={linesRef.current}
-          followOutput={isFollowing ? "smooth" : false}
-          atBottomStateChange={(b) => setIsFollowing(b)}
-          itemContent={(i, log: NormalizedLog) => {
-            // compute delta safely
-            let delta = "";
-            if (showDelta && log.timestamp) {
-              const tsNum = Number(new Date(log.timestamp).getTime());
-              if (isFinite(tsNum) && prevTs !== 0) {
-                delta = formatDelta(tsNum - prevTs);
-              }
-              if (isFinite(tsNum)) prevTs = tsNum;
-            }
-
-            // safe idx display (avoid NaN)
-            const displayIdx = Number.isFinite(log.idx) ? log.idx : i;
-
-            return (
+          {/* Scrollbar */}
+          <div
+            ref={trackRef}
+            className="w-3 relative bg-white/5 cursor-pointer"
+            onPointerDown={onTrackDown}
+          >
+            {rowCount > visibleRows && (
               <div
-                className={`font-mono px-3 py-1 whitespace-pre ${log.context ? "opacity-60" : ""}`}
-              >
-                <span className="text-gray-500">{displayIdx + 1}</span>:{" "}
-                {log.timestamp && `[${log.timestamp}]`}{" "}
-                {delta && (
-                  <span className="text-gray-500 italic ml-1">(+{delta})</span>
-                )}{" "}
-                {log.level && (
-                  <span style={{ color: colorMap[log.level] || "white", fontWeight: "bold" }}>
-                    [{log.level}]
-                  </span>
-                )}{" "}
-                {log.domain && <span className="text-blue-400">[{log.domain}]</span>}{" "}
-                <span className={`${log.matched ? "" : ""}`}>
-                  {extractMessage(log.line)}
-                </span>
-              </div>
-            );
-          }}
-        />
+                className="absolute left-0.5 right-0.5 rounded bg-white/40 hover:bg-white/60"
+                style={{ top: thumbTop, height: thumbHeight }}
+                onPointerDown={onThumbDown}
+                onPointerMove={onThumbMove}
+                onPointerUp={onThumbUp}
+              />
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );

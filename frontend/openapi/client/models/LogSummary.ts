@@ -17,9 +17,13 @@ export type LogSummary = {
      */
     stop_timestamp?: string | null;
     /**
-     * Total number of lines in the log
+     * Number of lines in the `[ts] [LEVEL] [domain] message` format
      */
     total_lines: number;
+    /**
+     * Number of lines in the file, including lines not in the log format
+     */
+    line_count: number;
     /**
      * List of unique domains found in the log
      */

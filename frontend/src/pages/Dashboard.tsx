@@ -44,12 +44,10 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
     const levelsParam = debouncedLevels ? `&levels=${encodeURIComponent(debouncedLevels)}` : "";
     const domainsParam = debouncedDomains ? `&domains=${encodeURIComponent(debouncedDomains)}` : "";
     const keywordsParam = debouncedKeywords ? `&keywords=${encodeURIComponent(debouncedKeywords)}` : "";
-    const contextParam = contextLines > 0 ? `&context=${contextLines}` : "";
 
-    const logUrl =
-        `${baseUrl}/stream_logs?` +
-        `session_id=${encodeURIComponent(sessionId)}` +
-        `${levelsParam}${domainsParam}${keywordsParam}${contextParam}`;
+    // Changing the filter triggers one scan on the backend; changing the context
+    // reuses its result (the backend keeps match line numbers, not text).
+    const filterParams = `${levelsParam}${domainsParam}${keywordsParam}`;
 
     // Cleanup session on exit
     useEffect(() => {
@@ -179,7 +177,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
                                 type="number"
                                 min={0}
                                 value={contextLines}
-                                onChange={(e) => setContextLines(parseInt(e.target.value) || 0)}
+                                onChange={(e) => setContextLines(Math.max(0, parseInt(e.target.value) || 0))}
                                 className="w-20"
                                 placeholder="0"
                             />
@@ -189,7 +187,13 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
                 </Card>
 
                     {/* LogViewer */}
-                    <LogViewer url={logUrl} maxLines={100000} showDelta={showDelta} />
+                    <LogViewer
+                        baseUrl={baseUrl}
+                        sessionId={sessionId}
+                        filterParams={filterParams}
+                        context={contextLines}
+                        showDelta={showDelta}
+                    />
                     </div>
                 </SidebarInset>
             </SidebarProvider>

@@ -1,6 +1,7 @@
 mod api;
 mod api_doc;
 mod log_storage;
+mod logfile;
 mod model;
 mod parsing;
 
@@ -31,7 +32,7 @@ async fn main() {
         .layer(DefaultBodyLimit::disable())
         .layer(RequestBodyLimitLayer::new(1024 * 1024 * 1024))
         .merge(api::filter::router())
-        .merge(api::stream_filtered_logs::router())
+        .merge(api::view::router())
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
         .layer(cors);
 
