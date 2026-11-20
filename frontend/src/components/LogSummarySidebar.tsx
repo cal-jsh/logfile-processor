@@ -13,6 +13,7 @@ import {
   SidebarSeparator,
   SidebarTrigger,
   SidebarRail,
+  useSidebar,
 } from "./ui/sidebar";
 import { Checkbox } from "./ui/checkbox";
 import { Button } from "./ui/button";
@@ -178,6 +179,7 @@ export default function LogSummarySidebar({
       cancelled = true;
     };
   }, []);
+  const { state: sidebarState } = useSidebar();
   const otherLines =
     summary.line_count != null && summary.line_count !== summary.total_lines
       ? summary.line_count - summary.total_lines
@@ -200,7 +202,10 @@ export default function LogSummarySidebar({
               )}
             </div>
           </div>
-          <SidebarTrigger className="shrink-0" />
+          <SidebarTrigger
+            className="shrink-0"
+            title={sidebarState === "collapsed" ? "Show sidebar (Ctrl+→)" : "Hide sidebar (Ctrl+←)"}
+          />
         </div>
       </SidebarHeader>
 

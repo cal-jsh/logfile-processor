@@ -30,6 +30,22 @@ _A 5 GB, 52 million line log: opened in about 3 seconds, filters in a fraction o
 - **Recent files**, drag and drop onto the window or the exe, and a Report a bug
   button that fills in version details.
 
+### Keyboard shortcuts
+
+The sidebar and the filter panel start collapsed so the log gets the whole window.
+Both remember whether you left them open.
+
+| Keys | Action |
+| --- | --- |
+| Ctrl+→ / Ctrl+← | Show / hide the sidebar (also the toggle at its top, or Ctrl+B) |
+| Ctrl+↓ / Ctrl+↑ | Show / hide the filter panel (also the Filter button in the status bar) |
+| Ctrl+F / Ctrl+G | Search in the view / go to line |
+| Ctrl+wheel | Zoom the thread lanes |
+
+The panel shortcuts are ignored while typing in a text field, where Ctrl+arrows move
+the cursor by word. Filters stay applied while the panel is hidden; the status bar
+shows them and has a button to clear them.
+
 ## Install
 
 Download the installer (`.exe` or `.msi`) from the
