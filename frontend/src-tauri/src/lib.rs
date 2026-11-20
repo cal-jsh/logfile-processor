@@ -57,6 +57,17 @@ async fn open_log_dialog(app: tauri::AppHandle) -> Result<Option<Opened>, String
     open(path).await.map(Some)
 }
 
+/// Which of these paths are files right now, for the recently opened list. Runs off the
+/// main thread, since a path on an unreachable network share can take a while to fail.
+#[tauri::command]
+async fn files_exist(paths: Vec<String>) -> Result<Vec<bool>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        paths.iter().map(|p| std::path::Path::new(p).is_file()).collect()
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
 /// Export the current view (filter + context) through a native Save dialog. The
 /// webview cannot download from the API, so Rust writes the file directly.
 /// Returns the saved path, or `None` if cancelled.
@@ -215,6 +226,7 @@ fn run_with(initial: Option<Result<String, String>>) {
             open_log_path,
             open_log_dialog,
             export_view,
+            files_exist,
             initial_file
         ])
         .run(tauri::generate_context!())

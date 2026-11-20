@@ -8,6 +8,8 @@ import {
     openLogPath,
     type OpenedLog,
 } from "./lib/platform";
+import { addRecent, clearRecent, filesExist, loadRecent, removeRecent, type RecentFile } from "./lib/recentFiles";
+import { RecentFiles } from "./components/RecentFiles";
 
 // shadcn/ui components
 import { Button } from "@/components/ui/button"
@@ -27,6 +29,9 @@ export default function App() {
     const [sessionId, setSessionId] = useState<string | null>(null);
     const [filePath, setFilePath] = useState<string | null>(null);
     const [busy, setBusy] = useState(false);
+    const [recent, setRecent] = useState<RecentFile[]>(loadRecent);
+    // Recent paths that are not there any more, checked whenever the start page shows
+    const [missing, setMissing] = useState<Set<string>>(new Set());
     // Read by the drop handler, which outlives renders
     const current = useRef<{ baseUrl: string | null; sessionId: string | null }>({ baseUrl: null, sessionId: null });
     current.current = { baseUrl, sessionId };
@@ -49,6 +54,7 @@ export default function App() {
         setSummary(opened.summary);
         setFilePath(opened.path);
         setError(null);
+        setRecent(addRecent(opened.path));
     };
 
     /* ---------------- Open in place by path ---------------- */
@@ -96,6 +102,39 @@ export default function App() {
         };
     }, [openWith]);
 
+    // Check the recent files when the start page shows (also after closing a file).
+    // Reload the list too: another window may have opened files meanwhile.
+    const onStartPage = !summary;
+    useEffect(() => {
+        if (!onStartPage) return;
+        const list = loadRecent();
+        setRecent(list);
+        let cancelled = false;
+        filesExist(list.map((r) => r.path))
+            .then((ok) => {
+                if (!cancelled) setMissing(new Set(list.filter((_, i) => !ok[i]).map((r) => r.path)));
+            })
+            .catch(() => {});
+        return () => {
+            cancelled = true;
+        };
+    }, [onStartPage]);
+
+    /** Open a file from the recent list. One that is gone stays listed, marked, until removed. */
+    const openRecent = (path: string) =>
+        openWith(async () => {
+            try {
+                return await openLogPath(path);
+            } catch (err) {
+                const [ok] = await filesExist([path]).catch(() => [true]);
+                if (!ok) {
+                    setMissing((m) => new Set(m).add(path));
+                    throw `File not found: ${path}. It may have been moved, renamed or deleted.`;
+                }
+                throw err;
+            }
+        });
+
     /** Close the current file and go back to the start page. */
     const closeFile = () => {
         if (baseUrl && sessionId) {
@@ -123,9 +162,9 @@ export default function App() {
     }
 
     return (
-        <div className="flex flex-col gap-6"
+        <div className="flex flex-col gap-6 px-4 py-8"
             style={{
-                height: "100vh",
+                minHeight: "100vh",
                 display: "flex",
                 justifyContent: "center",
                 alignItems: "center",
@@ -151,6 +190,15 @@ export default function App() {
                 </p>
             )}
             {error && <p style={{ color: "red" }}>{error}</p>}
+
+            <RecentFiles
+                files={recent}
+                missing={missing}
+                disabled={busy || !baseUrl}
+                onOpen={openRecent}
+                onRemove={(p) => setRecent(removeRecent(p))}
+                onClear={() => setRecent(clearRecent())}
+            />
         </div>
     );
 }
