@@ -584,6 +584,33 @@ mod bench {
             println!("domain time columns 4000: {:.2} ms", ms(t.elapsed()));
         }
 
+        if let Some(field) = fmt.field_index("thread") {
+            use crate::logfile::lanes::{LaneBins, LaneIndex};
+            let t = Instant::now();
+            let li = LaneIndex::build(&file, &lv, &fmt, field);
+            println!(
+                "thread lane index: {:.0} ms ({} lanes, {} in other)",
+                ms(t.elapsed()),
+                li.lanes.lanes.len(),
+                li.lanes.other_values
+            );
+            let t = Instant::now();
+            let _ = li.bins.columns(3000);
+            println!("thread lane columns 3000: {:.2} ms", ms(t.elapsed()));
+            let span = li.bins.span;
+            for (name, div) in [("1/100 of the span", 100i64), ("1/10000 of the span", 10_000)] {
+                let mid = span.0 + (span.1 - span.0) / 2;
+                let w = (mid, mid + (span.1 - span.0) / div);
+                let t = Instant::now();
+                let lines = li.window_lines(w, file.line_count());
+                let b = LaneBins::build_window(&file, &lv, &fmt, field, &li.lanes, w, &lines.into_iter().collect::<Vec<_>>());
+                println!("thread lane window {name}: {:.0} ms ({} lines read, {} in window)", ms(t.elapsed()), lines.map_or(0, |l| l.1 - l.0), b.timed_lines);
+            }
+            let t = Instant::now();
+            let b = LaneBins::build_window(&file, &lv, &fmt, field, &li.lanes, span, errors.ranges());
+            println!("thread lanes, ERROR filter: {:.0} ms ({} lines)", ms(t.elapsed()), b.timed_lines);
+        }
+
         // random-access latency: 256 lines at spread-out positions
         let n = file.line_count();
         let mut worst = 0f64;

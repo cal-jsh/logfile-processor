@@ -2,6 +2,7 @@
 
 pub mod categories;
 pub mod index;
+pub mod lanes;
 pub mod levels;
 pub mod scan;
 pub mod timeline;

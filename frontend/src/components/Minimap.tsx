@@ -77,7 +77,7 @@ export function parseLogTime(ts: string | undefined): number | null {
 const pad = (n: number, w = 2) => String(n).padStart(w, "0");
 
 /** Format a log-clock time; `step` (ms) decides the precision */
-function formatTime(t: number, step: number, withDate: boolean): string {
+export function formatTime(t: number, step: number, withDate: boolean): string {
   const d = new Date(t);
   const date = `${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
   if (step >= 86_400_000) return date;
@@ -88,7 +88,7 @@ function formatTime(t: number, step: number, withDate: boolean): string {
 }
 
 /** Full readout for the hover label */
-function formatFull(t: number): string {
+export function formatFull(t: number): string {
   const d = new Date(t);
   return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}.${pad(d.getUTCMilliseconds(), 3)}`;
 }
@@ -97,7 +97,7 @@ const S = 1000, M = 60 * S, H = 60 * M, D = 24 * H;
 const STEPS = [1, 2, 5, 10, 20, 50, 100, 200, 500, S, 2 * S, 5 * S, 10 * S, 15 * S, 30 * S, M, 2 * M, 5 * M, 10 * M, 15 * M, 30 * M, H, 2 * H, 3 * H, 6 * H, 12 * H, D, 2 * D, 7 * D, 14 * D, 30 * D, 91 * D, 365 * D];
 
 /** Tick times and labels for a span of `start..end` over `width` px */
-function timeTicks(start: number, end: number, width: number): { t: number; label: string }[] {
+export function timeTicks(start: number, end: number, width: number): { t: number; label: string }[] {
   const span = end - start;
   if (!(span > 0) || width <= 0) return [];
   const want = (span * LABEL_SPACING) / width;

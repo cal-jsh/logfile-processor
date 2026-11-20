@@ -7,6 +7,7 @@ import { Download, Hash, Search } from "lucide-react";
 import { exportView } from "../lib/platform";
 import { FloatingPanel } from "./FloatingPanel";
 import { Minimap, type MinimapAxis, type VisibleRange } from "./Minimap";
+import { ThreadLanes } from "./ThreadLanes";
 import type { FieldDef } from "../lib/logSummary";
 
 /*
@@ -137,6 +138,7 @@ export const LogViewer = ({
   showMinimap,
   minimapAxis,
   minimapColor,
+  lanesField,
   searchOpen,
   onSearchOpenChange,
 }: {
@@ -158,6 +160,8 @@ export const LogViewer = ({
   minimapAxis: MinimapAxis;
   /** Minimap colours: "level", or the name of a text field (e.g. "domain") */
   minimapColor: string;
+  /** Thread swimlanes by this field; null hides them */
+  lanesField: FieldDef | null;
   /** The floating "Search & go to line" panel */
   searchOpen: boolean;
   onSearchOpenChange: (open: boolean) => void;
@@ -648,6 +652,18 @@ export const LogViewer = ({
           filterParams={filterParams}
           axis={minimapAxis}
           color={minimapColor}
+          visible={visibleRef.current}
+          onJumpToLine={jumpToLine}
+        />
+      )}
+
+      {lanesField && (
+        <ThreadLanes
+          baseUrl={baseUrl}
+          sessionId={sessionId}
+          filterParams={filterParams}
+          field={lanesField.name}
+          fieldLabel={lanesField.label}
           visible={visibleRef.current}
           onJumpToLine={jumpToLine}
         />

@@ -92,6 +92,37 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
             /* storage unavailable: keep it for this session only */
         }
     };
+    // thread swimlanes below the minimap, and the field that makes the lanes
+    const [showLanes, setShowLanesState] = useState<boolean>(() => {
+        try {
+            return localStorage.getItem("logviewer.showLanes") === "true";
+        } catch {
+            return false;
+        }
+    });
+    const setShowLanes = (v: boolean) => {
+        setShowLanesState(v);
+        try {
+            localStorage.setItem("logviewer.showLanes", String(v));
+        } catch {
+            /* storage unavailable: keep it for this session only */
+        }
+    };
+    const [lanesField, setLanesFieldState] = useState<string>(() => {
+        try {
+            return localStorage.getItem("logviewer.lanesField") || "thread";
+        } catch {
+            return "thread";
+        }
+    });
+    const setLanesField = (v: string) => {
+        setLanesFieldState(v);
+        try {
+            localStorage.setItem("logviewer.lanesField", v);
+        } catch {
+            /* storage unavailable: keep it for this session only */
+        }
+    };
     // fields not shown as columns, by name; remembered per browser for all files
     const [hiddenColumns, setHiddenColumnsState] = useState<string[]>(() => {
         try {
@@ -127,6 +158,10 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
     const effectiveMinimapColor = summary.format.columns.some((c) => c.kind === "text" && c.name === minimapColor)
         ? minimapColor
         : "level";
+    // lanes by the chosen field if this file has it, else by thread, else by the first text field
+    const textFields = summary.format.columns.filter((c) => c.kind === "text");
+    const lanesFieldDef =
+        textFields.find((c) => c.name === lanesField) ?? textFields.find((c) => c.name === "thread") ?? textFields[0] ?? null;
     const levelOptions = Object.keys(summary.levels || {}).sort((a, b) => levelRank(a) - levelRank(b) || a.localeCompare(b));
     // a filter per field with more than one value (domain, thread, ...)
     const fieldFilters = (summary.fields ?? []).filter((f) => f.values.length > 1 || f.more);
@@ -187,6 +222,10 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
                 setMinimapAxis={setMinimapAxis}
                 minimapColor={effectiveMinimapColor}
                 setMinimapColor={setMinimapColor}
+                showLanes={showLanes}
+                setShowLanes={setShowLanes}
+                lanesField={lanesFieldDef?.name ?? null}
+                setLanesField={setLanesField}
                 contextLines={contextLines}
                 setContextLines={setContextLines}
             />
@@ -306,6 +345,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
                             showMinimap={showMinimap}
                             minimapAxis={minimapAxis}
                             minimapColor={effectiveMinimapColor}
+                            lanesField={showLanes && lanesFieldDef ? lanesFieldDef : null}
                             searchOpen={searchOpen}
                             onSearchOpenChange={setSearchOpen}
                         />

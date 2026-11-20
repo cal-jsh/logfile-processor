@@ -40,6 +40,7 @@ pub fn desktop_router() -> Router {
     Router::new()
         .merge(api::view::router())
         .merge(api::minimap::router())
+        .merge(api::lanes::router())
         .merge(api::version::router())
         .merge(api::format::router())
         .layer(cors)

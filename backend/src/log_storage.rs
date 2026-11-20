@@ -3,6 +3,8 @@
 
 use crate::logfile::categories::{CategoryIndex, CategoryTimeBins};
 use crate::logfile::index::LogFile;
+use crate::logfile::lanes::{LaneBins, LaneIndex};
+use crate::logfile::view::LaneKey;
 use crate::logfile::levels::LevelIndex;
 use crate::logfile::timeline::TimeBins;
 use crate::logfile::scan::{scan_matches, Cancelled, CompiledFilter};
@@ -38,7 +40,14 @@ pub struct Session {
     categories: Mutex<HashMap<String, CategoryCell>>,
     /// Those categories binned by time, per field name, built on first use.
     category_time_bins: Mutex<HashMap<String, Arc<tokio::sync::OnceCell<Arc<CategoryTimeBins>>>>>,
+    /// Swimlanes of a field (thread lanes), per field name, built on first use.
+    lanes: Mutex<HashMap<String, Arc<tokio::sync::OnceCell<Arc<LaneIndex>>>>>,
+    /// Zoomed-in lane windows, most recently used last.
+    lane_windows: Mutex<VecDeque<(LaneKey, Arc<LaneBins>)>>,
 }
+
+/// Zoomed lane windows kept per session (and per filter result).
+pub const LANE_WINDOW_CACHE: usize = 6;
 
 type CategoryCell = Arc<tokio::sync::OnceCell<Arc<CategoryIndex>>>;
 
@@ -58,7 +67,7 @@ pub enum QueryError {
 
 impl Session {
     pub fn new(path: PathBuf, file: Arc<LogFile>, format: Arc<LogFormat>) -> Self {
-        Self { path, file, format, queries: Mutex::new(QueryCache::default()), levels: Default::default(), time_bins: Default::default(), categories: Default::default(), category_time_bins: Default::default() }
+        Self { path, file, format, queries: Mutex::new(QueryCache::default()), levels: Default::default(), time_bins: Default::default(), categories: Default::default(), category_time_bins: Default::default(), lanes: Default::default(), lane_windows: Default::default() }
     }
 
     /// The lines matching `filter`, from the cache or by scanning the file.
@@ -209,6 +218,51 @@ impl Session {
             })
             .await?;
         Ok(bins.clone())
+    }
+
+    /// The swimlanes of field `name` (format field number `field`), built (once, in
+    /// parallel) on first use. Returns the index and whether it was already built.
+    pub async fn lanes(&self, name: &str, field: usize, levels: Arc<LevelIndex>) -> Result<(Arc<LaneIndex>, bool), QueryError> {
+        let cell = self.lanes.lock().unwrap().entry(name.to_string()).or_default().clone();
+        if let Some(c) = cell.get() {
+            return Ok((c.clone(), true));
+        }
+        let file = self.file.clone();
+        let format = self.format.clone();
+        let idx = cell
+            .get_or_try_init(|| async move {
+                let idx = tokio::task::spawn_blocking(move || LaneIndex::build(&file, &levels, &format, field))
+                    .await
+                    .map_err(|e| QueryError::Internal(e.to_string()))?;
+                info!(
+                    "Lane index ({} lanes, {} values in 'other') built in {} ms",
+                    idx.lanes.lanes.len(),
+                    idx.lanes.other_values,
+                    idx.build_time.as_millis()
+                );
+                Ok::<_, QueryError>(Arc::new(idx))
+            })
+            .await?;
+        Ok((idx.clone(), false))
+    }
+
+    /// A cached zoomed-in lane window.
+    pub fn lane_window(&self, key: &LaneKey) -> Option<Arc<LaneBins>> {
+        let mut w = self.lane_windows.lock().unwrap();
+        let i = w.iter().position(|e| &e.0 == key)?;
+        let e = w.remove(i).unwrap();
+        let bins = e.1.clone();
+        w.push_back(e);
+        Some(bins)
+    }
+
+    pub fn put_lane_window(&self, key: LaneKey, bins: Arc<LaneBins>) {
+        let mut w = self.lane_windows.lock().unwrap();
+        w.retain(|e| e.0 != key);
+        w.push_back((key, bins));
+        while w.len() > LANE_WINDOW_CACHE {
+            w.pop_front();
+        }
     }
 
     /// Register a scan for `key` and cancel a running scan for any other query.

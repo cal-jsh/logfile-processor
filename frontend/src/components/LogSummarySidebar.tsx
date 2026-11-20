@@ -50,6 +50,11 @@ interface Props {
   /** "level", or the name of a text field (e.g. "domain") */
   minimapColor: string;
   setMinimapColor: (v: string) => void;
+  showLanes: boolean;
+  setShowLanes: (v: boolean) => void;
+  /** The field the lanes are made of; null when the format has no text field */
+  lanesField: string | null;
+  setLanesField: (v: string) => void;
   contextLines: number;
   setContextLines: (v: number) => void;
 }
@@ -111,6 +116,10 @@ export default function LogSummarySidebar({
   setMinimapAxis,
   minimapColor,
   setMinimapColor,
+  showLanes,
+  setShowLanes,
+  lanesField,
+  setLanesField,
   contextLines,
   setContextLines,
 }: Props) {
@@ -127,6 +136,11 @@ export default function LogSummarySidebar({
   const fit = format.sample_lines > 0 ? format.sample_matched / format.sample_lines : 1;
   // fields that can be hidden: all but the message
   const optionalColumns = format.columns.filter((c) => c.kind !== "message");
+  // lanes can be made of any text field (thread first)
+  const laneOptions = format.columns
+    .filter((c) => c.kind === "text")
+    .sort((a, b) => Number(b.name === "thread") - Number(a.name === "thread"))
+    .map((c) => ({ value: c.name, label: c.label, title: `One lane per ${c.label.toLowerCase()} (the 48 busiest, the rest together)` }));
   // the minimap can colour by level or by any text field (domain first)
   const colorOptions: { value: string; label: string; title: string }[] = [
     { value: "level", label: "Level", title: "Most severe log level of the lines in each column" },
@@ -363,6 +377,27 @@ export default function LogSummarySidebar({
                     onChange={setMinimapColor}
                   />
                 )}
+              </div>
+            )}
+
+            {lanesField && (
+              <label htmlFor="toggle-show-lanes" className="flex cursor-pointer items-start gap-2.5">
+                <Checkbox
+                  id="toggle-show-lanes"
+                  checked={showLanes}
+                  onCheckedChange={(checked: boolean | "indeterminate") => setShowLanes(!!checked)}
+                  className="mt-0.5"
+                />
+                <div className="grid gap-0.5">
+                  <span className="text-sm leading-none font-medium">Show {lanesField === "thread" ? "thread" : laneOptions.find((o) => o.value === lanesField)?.label.toLowerCase() ?? ""} lanes</span>
+                  <span className="text-xs text-muted-foreground">One lane per {lanesField === "thread" ? "thread" : laneOptions.find((o) => o.value === lanesField)?.label.toLowerCase()} over time, Ctrl+wheel zooms</span>
+                </div>
+              </label>
+            )}
+
+            {lanesField && showLanes && laneOptions.length > 1 && (
+              <div className="-mt-1 flex flex-wrap items-center gap-2 pl-6.5">
+                <Segmented label="Lanes by" options={laneOptions} value={lanesField} onChange={setLanesField} />
               </div>
             )}
 

@@ -9,6 +9,7 @@
 
 use crate::logfile::index::{LineIter, LogFile};
 use crate::logfile::categories::CategoryTimeBins;
+use crate::logfile::lanes::LaneBins;
 use crate::logfile::timeline::TimeBins;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
@@ -25,12 +26,17 @@ pub struct MatchSet {
     pub time_bins: OnceLock<Arc<TimeBins>>,
     /// The matches' categories binned by time, per field (minimap colouring), on first use.
     pub category_time_bins: Mutex<Vec<(String, Arc<CategoryTimeBins>)>>,
+    /// The matches in swimlanes, per lane field and time window (ns), most recent last.
+    pub lane_bins: Mutex<Vec<(LaneKey, Arc<LaneBins>)>>,
 }
+
+/// Lane field and time window (ns) of a [`LaneBins`].
+pub type LaneKey = (String, i64, i64);
 
 impl MatchSet {
     pub fn new(ranges: Vec<(u64, u64)>, line_count: u64, scan_time: Duration) -> Self {
         let match_count = ranges.iter().map(|r| r.1 - r.0).sum();
-        Self { ranges, match_count, line_count, scan_time, last_view: Mutex::new(None), time_bins: OnceLock::new(), category_time_bins: Mutex::new(Vec::new()) }
+        Self { ranges, match_count, line_count, scan_time, last_view: Mutex::new(None), time_bins: OnceLock::new(), category_time_bins: Mutex::new(Vec::new()), lane_bins: Mutex::new(Vec::new()) }
     }
 
     pub fn match_count(&self) -> u64 {
