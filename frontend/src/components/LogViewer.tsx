@@ -1,9 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Input } from "./ui/input";
 import { Button } from "./ui/button";
-import { colorMap } from "../lib/colorMap";
+import { levelColor } from "../lib/colorMap";
 import { Spinner } from "./ui/spinner";
-import { Download } from "lucide-react";
+import { Download, Hash, Search } from "lucide-react";
+import { exportView } from "../lib/platform";
+import { FloatingPanel } from "./FloatingPanel";
+import { Minimap, type MinimapAxis, type VisibleRange } from "./Minimap";
+import { ThreadLanes } from "./ThreadLanes";
+import type { FieldDef } from "../lib/logSummary";
 
 /*
  * Viewport-based log viewer.
@@ -28,6 +33,10 @@ type Row = {
   row: number;
   line_number: number; // 1-based line in the file
   text: string;
+  /** The line's fields in the order of the format's columns; null if not in the format */
+  fields: string[] | null;
+  /** Timestamp, ms since 1970 in the log's own clock */
+  t: number | null;
   context: boolean;
   truncated: boolean;
 };
@@ -41,35 +50,75 @@ type ViewInfo = {
   cached: boolean;
 };
 
-type SearchHit = { row: number; line_number: number; text: string };
-
-type ParsedLine = {
-  timestamp?: string;
-  level?: string;
-  domain?: string;
-  message: string;
-};
+type SearchHit = { row: number; line_number: number; text: string; fields: string[] | null };
 
 /* ---------------- Helpers ---------------- */
-// Same format as the backend's LOG_REGEX: [ts] [LEVEL] [domain] message
-const LINE_RE = /^\[([^\]]+)\]\s\[([^\]]+)\]\s\[([^\]]+)\]\s*(.*)$/s;
-
-function parseLine(text: string): ParsedLine {
-  const m = LINE_RE.exec(text);
-  if (!m) return { message: text };
-  return { timestamp: m[1], level: m[2], domain: m[3], message: m[4] };
-}
-
-function parseTime(ts: string | undefined): number | null {
-  if (!ts) return null;
-  const t = new Date(ts).getTime();
-  return Number.isFinite(t) ? t : null;
-}
+/** Colors of text fields in the rows; others are gray */
+const FIELD_COLORS: Record<string, string> = {
+  domain: "text-blue-400",
+  thread: "text-violet-300",
+  process: "text-teal-300",
+};
 
 function formatDelta(ms: number): string {
   if (ms < 0.001) return `${Math.round(ms * 1_000_000)} µs`;
   else if (ms < 1000) return `${Math.round(ms)} ms`;
   else return `${(ms / 1000).toFixed(2)} s`;
+}
+
+/** Mark the occurrences of `q` (case-insensitive) in a search result */
+function highlight(text: string, q: string): React.ReactNode {
+  if (!q) return text;
+  const lower = text.toLowerCase();
+  const needle = q.toLowerCase();
+  const out: React.ReactNode[] = [];
+  let i = 0;
+  for (let j = lower.indexOf(needle); j !== -1 && out.length < 40; j = lower.indexOf(needle, i)) {
+    if (j > i) out.push(text.slice(i, j));
+    out.push(
+      <mark key={j} className="rounded-sm bg-yellow-300/70 px-0.5 text-inherit">
+        {text.slice(j, j + q.length)}
+      </mark>
+    );
+    i = j + q.length;
+  }
+  if (i < text.length) out.push(text.slice(i));
+  return out;
+}
+
+/** A search hit, compact: time, level, other fields and the message, with the match marked */
+function ResultText({ hit, q, columns }: { hit: SearchHit; q: string; columns: FieldDef[] }) {
+  const { text, fields } = hit;
+  if (!fields) {
+    // not in the log format: start shortly before the match so it stays visible
+    const at = text.toLowerCase().indexOf(q.toLowerCase());
+    const snippet = at > 40 ? "…" + text.slice(at - 20) : text;
+    return <span className="truncate">{highlight(snippet, q)}</span>;
+  }
+  const of = (kind: FieldDef["kind"]) => {
+    const i = columns.findIndex((c) => c.kind === kind);
+    return i >= 0 ? fields[i] : undefined;
+  };
+  const ts = of("time");
+  const time = ts?.match(/\d{2}:\d{2}:\d{2}(\.\d{1,3})?/)?.[0] ?? ts;
+  const level = of("level");
+  const others = columns.map((c, i) => (c.kind === "text" ? fields[i] : null)).filter((v): v is string => !!v);
+  return (
+    <span className="flex min-w-0 items-baseline gap-2">
+      {time && <span className="shrink-0 tabular-nums text-muted-foreground">{time}</span>}
+      {level != null && (
+        <span className="w-11 shrink-0 font-semibold" style={{ color: `color-mix(in oklab, ${levelColor(level) ?? "currentColor"} 70%, var(--foreground))` }}>
+          {level}
+        </span>
+      )}
+      <span className="truncate">
+        {others.map((v, i) => (
+          <span key={i} className="text-muted-foreground">{highlight(v, q)} </span>
+        ))}
+        {highlight(of("message") ?? text, q)}
+      </span>
+    </span>
+  );
 }
 
 function clamp(v: number, lo: number, hi: number) {
@@ -81,15 +130,41 @@ export const LogViewer = ({
   baseUrl,
   sessionId,
   filterParams,
+  columns,
+  hiddenColumns,
+  columnWidths,
   context,
   showDelta,
+  showMinimap,
+  minimapAxis,
+  minimapColor,
+  lanesField,
+  searchOpen,
+  onSearchOpenChange,
 }: {
   baseUrl: string;
   sessionId: string;
   /** Encoded filter query parameters, e.g. "&levels=ERROR&keywords=foo" */
   filterParams: string;
+  /** The fields of the file's format, in line order */
+  columns: FieldDef[];
+  /** Names of the fields not shown */
+  hiddenColumns: string[];
+  /** Width in characters per field name, to line the columns up */
+  columnWidths: Record<string, number>;
   context: number;
   showDelta: boolean;
+  /** The level minimap above the rows */
+  showMinimap: boolean;
+  /** Minimap columns by equal line counts or by equal time slices */
+  minimapAxis: MinimapAxis;
+  /** Minimap colours: "level", or the name of a text field (e.g. "domain") */
+  minimapColor: string;
+  /** Thread swimlanes by this field; null hides them */
+  lanesField: FieldDef | null;
+  /** The floating "Search & go to line" panel */
+  searchOpen: boolean;
+  onSearchOpenChange: (open: boolean) => void;
 }) => {
   const viewParams = `session_id=${encodeURIComponent(sessionId)}${filterParams}&context=${context}`;
 
@@ -337,11 +412,85 @@ export const LogViewer = ({
     if (row < rowCount) jumpToRow(row);
   };
 
-  /* ---------------- Downloads (streamed by the backend) ---------------- */
-  const download = (format: "txt" | "csv") => {
-    const a = document.createElement("a");
-    a.href = `${baseUrl}/view/export?${viewParams}&format=${format}`;
-    a.click();
+  /* ---------------- Minimap: jump to a file line ----------------
+     When every line of the file is a row (no filter, all lines in the log format),
+     row = line - 1 and dragging needs no request. Otherwise the backend maps the line
+     to the first row at or after it; only the latest request counts while dragging. */
+  const minimapReqRef = useRef<AbortController | null>(null);
+  const identityRows = !!info && info.row_count === info.line_count;
+  const centerRow = (row: number) => scrollTo(Math.min(row, rowCount - 1) - Math.floor(visibleRows / 2));
+  const jumpToLine = (line: number) => {
+    if (!rowCount) return;
+    if (identityRows) {
+      centerRow(line - 1);
+      return;
+    }
+    minimapReqRef.current?.abort();
+    const ctrl = new AbortController();
+    minimapReqRef.current = ctrl;
+    fetch(`${baseUrl}/view/row_of_line?${viewParams}&line=${line}`, { signal: ctrl.signal })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: { row: number } | null) => {
+        if (d && minimapReqRef.current === ctrl) centerRow(d.row);
+      })
+      .catch(() => { });
+  };
+
+  /* ---------------- Keyboard: Ctrl+F search, Ctrl+G go to line ----------------
+     The rows are virtualized, so the browser's own find can't see them anyway. */
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const gotoInputRef = useRef<HTMLInputElement>(null);
+  const focusAfterOpen = useRef<"search" | "goto" | null>(null);
+
+  const focusRequested = () => {
+    const which = focusAfterOpen.current;
+    focusAfterOpen.current = null;
+    const el = which === "goto" ? gotoInputRef.current : which === "search" ? searchInputRef.current : null;
+    el?.focus();
+    el?.select();
+  };
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
+      const k = e.key.toLowerCase();
+      if (k !== "f" && k !== "g") return;
+      e.preventDefault();
+      focusAfterOpen.current = k === "f" ? "search" : "goto";
+      if (searchOpen) focusRequested();
+      else onSearchOpenChange(true);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+
+  // opened from the sidebar or a shortcut: put the cursor in the search box
+  useEffect(() => {
+    if (!searchOpen) return;
+    if (!focusAfterOpen.current) focusAfterOpen.current = "search";
+    focusRequested();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchOpen]);
+
+  /* ---------------- Export (written by Rust after a native Save dialog) ---------------- */
+  const [exportMsg, setExportMsg] = useState<string | null>(null);
+  const download = async (format: "txt" | "csv") => {
+    // An <a href> download would navigate the whole webview away
+    const p = new URLSearchParams(filterParams);
+    setExportMsg("Exporting…");
+    try {
+      const saved = await exportView({
+        sessionId,
+        levels: p.get("levels"),
+        fields: p.get("fields"),
+        keywords: p.get("keywords"),
+        context,
+        format,
+      });
+      setExportMsg(saved ? `Saved to ${saved}` : null);
+    } catch (e) {
+      setExportMsg(`Export failed: ${e}`);
+    }
   };
 
   /* ---------------- Render ---------------- */
@@ -353,6 +502,31 @@ export const LogViewer = ({
   const topRowData = getRow(firstRow);
   topLineRef.current = topRowData ? topRowData.line_number : topLineRef.current;
 
+  // file lines (and their times) on screen, for the minimap's viewport box; while the
+  // rows are loading, the last known range is kept
+  const lastRow = Math.min(rowCount - 1, firstRow + visibleRows - 1);
+  const visibleRef = useRef<VisibleRange | null>(null);
+  if (rowCount > 0) {
+    const ra = getRow(firstRow);
+    const rb = getRow(lastRow);
+    const a = identityRows ? firstRow + 1 : ra?.line_number;
+    const b = identityRows ? lastRow + 1 : rb?.line_number;
+    if (a != null && b != null) {
+      const prev = visibleRef.current;
+      const time = (r: Row | undefined) => (r ? r.t : null);
+      visibleRef.current = {
+        first: a,
+        last: b,
+        tFirst: ra ? time(ra) : prev?.tFirst ?? null,
+        tLast: rb ? time(rb) : prev?.tLast ?? null,
+      };
+    }
+  } else {
+    visibleRef.current = null;
+  }
+
+  // line numbers right-aligned to the widest one, so the columns stay lined up
+  const lineDigits = String(info?.line_count ?? 0).length;
   const rows: JSX.Element[] = [];
   for (let i = 0; i < renderCount; i++) {
     const r = firstRow + i;
@@ -365,15 +539,44 @@ export const LogViewer = ({
       );
       continue;
     }
-    const parsed = parseLine(row.text);
-
     // time delta to the previous row of the view (not the previously rendered one)
     let delta = "";
     if (showDelta && r > 0) {
       const prev = getRow(r - 1);
-      const t = parseTime(parsed.timestamp);
-      const pt = prev ? parseTime(parseLine(prev.text).timestamp) : null;
-      if (t != null && pt != null) delta = formatDelta(t - pt);
+      if (row.t != null && prev?.t != null) delta = formatDelta(row.t - prev.t);
+    }
+    const deltaEl = delta && <span className="text-gray-500 italic">(+{delta}) </span>;
+
+    // the fields as columns: [value] padded to the widest value of the field, so
+    // they line up; lines not in the format are shown as they are
+    const cells: React.ReactNode[] = [];
+    let deltaShown = false;
+    if (row.fields) {
+      columns.forEach((c, i) => {
+        const v = row.fields![i] ?? "";
+        if (c.kind === "message") {
+          cells.push(<span key={i}>{v}</span>);
+          return;
+        }
+        if (hiddenColumns.includes(c.name)) return;
+        const width = columnWidths[c.name];
+        const style: React.CSSProperties = width ? { display: "inline-block", minWidth: `${width + 3}ch` } : {};
+        if (c.kind === "level") {
+          style.color = levelColor(v) ?? "white";
+          style.fontWeight = "bold";
+        }
+        cells.push(
+          <span key={i} className={c.kind === "text" ? FIELD_COLORS[c.name] ?? "text-gray-400" : undefined} style={style}>
+            [{v}]{" "}
+          </span>
+        );
+        if (c.kind === "time" && deltaEl) {
+          cells.push(<span key="delta">{deltaEl}</span>);
+          deltaShown = true;
+        }
+      });
+    } else {
+      cells.push(<span key="text">{row.text}</span>);
     }
 
     rows.push(
@@ -382,100 +585,40 @@ export const LogViewer = ({
         className={`font-mono px-3 whitespace-pre ${row.context ? "opacity-60" : ""} ${r === highlightRow ? "bg-yellow-500/30" : ""}`}
         style={{ height: ROW_HEIGHT, lineHeight: `${ROW_HEIGHT}px` }}
       >
-        <span className="text-gray-500">{row.line_number}</span>:{" "}
-        {parsed.timestamp && `[${parsed.timestamp}]`}{" "}
-        {delta && <span className="text-gray-500 italic ml-1">(+{delta})</span>}{" "}
-        {parsed.level && (
-          <span style={{ color: colorMap[parsed.level] || "white", fontWeight: "bold" }}>
-            [{parsed.level}]
-          </span>
-        )}{" "}
-        {parsed.domain && <span className="text-blue-400">[{parsed.domain}]</span>}{" "}
-        <span>{parsed.message}</span>
+        <span className="inline-block text-right text-gray-500" style={{ minWidth: `${lineDigits}ch` }}>
+          {row.line_number}
+        </span>
+        :{" "}
+        {!deltaShown && deltaEl}
+        {cells}
         {row.truncated && <span className="text-gray-500 italic"> … (line cut for display)</span>}
       </div>
     );
   }
 
+  const panelStatus = isSearching
+    ? "Searching…"
+    : search.length >= SEARCH_MIN
+      ? searchResults.length === 0
+        ? "No matches"
+        : searchComplete
+          ? `${searchResults.length.toLocaleString()} ${searchResults.length === 1 ? "match" : "matches"}`
+          : `First ${searchResults.length.toLocaleString()} matches`
+      : searchInput.length > 0
+        ? `Type at least ${SEARCH_MIN} characters`
+        : "Searches the rows of the current view";
+
   return (
-    <div className="flex h-[750px] w-full border rounded overflow-hidden">
-      {/* LEFT PANEL */}
-      <div className="w-80 border-r bg-muted/10 p-2 flex flex-col">
-        {/* Downloads */}
-        <div className="flex gap-2 mb-2">
-          <Button size="sm" variant="outline" disabled={!rowCount} onClick={() => download("txt")}>
-            <Download className="w-4 h-4 mr-1" />
-            Text
-          </Button>
-
-          <Button size="sm" variant="outline" disabled={!rowCount} onClick={() => download("csv")}>
-            <Download className="w-4 h-4 mr-1" />
-            CSV
-          </Button>
+    <div className="relative flex h-full min-h-0 w-full flex-col overflow-hidden rounded-lg border">
+      {loading && (
+        <div className="absolute inset-0 bg-black/40 flex items-center justify-center z-30">
+          <Spinner className="w-8 h-8 text-white" />
         </div>
+      )}
 
-        <div className="flex gap-2 mb-2">
-          <Input
-            placeholder="Go to line…"
-            inputMode="numeric"
-            value={gotoInput}
-            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setGotoInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") goToLine();
-            }}
-          />
-          <Button size="sm" variant="outline" onClick={goToLine} disabled={!rowCount}>
-            Go
-          </Button>
-        </div>
-
-        <Input
-          placeholder="Search…"
-          className="mb-2"
-          value={searchInput}
-          onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSearchInput(e.target.value)}
-        />
-
-        {/* Results */}
-        <div className="flex-1 overflow-auto border rounded p-1">
-          {isSearching && (
-            <div className="text-sm text-muted-foreground px-1 py-1">Searching…</div>
-          )}
-
-          {!isSearching && search.length >= SEARCH_MIN && searchResults.length === 0 && (
-            <div className="text-sm text-muted-foreground px-1 py-1">No matches found</div>
-          )}
-
-          {searchResults.length > 0 && (
-            <div className="text-xs text-muted-foreground px-1 pb-1">
-              {searchComplete
-                ? `Showing ${searchResults.length} results`
-                : `Showing the first ${searchResults.length} results`}
-            </div>
-          )}
-
-          {searchResults.map((r) => (
-            <div
-              key={r.row}
-              className="px-2 py-1 text-sm font-mono cursor-pointer rounded hover:bg-accent"
-              onClick={() => jumpToRow(r.row)}
-            >
-              <span className="font-bold text-primary mr-2">#{r.line_number}</span>
-              {r.text}
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* RIGHT PANEL */}
-      <div className="flex-1 relative flex flex-col min-w-0">
-        {loading && (
-          <div className="absolute inset-0 bg-black/40 flex items-center justify-center z-50">
-            <Spinner className="w-8 h-8 text-white" />
-          </div>
-        )}
-
-        <div role="status" className="text-xs px-3 py-1 border-b bg-muted/30 text-muted-foreground">
+      {/* Status bar + exports */}
+      <div className="flex items-center gap-2 border-b bg-muted/30 px-3 py-1">
+        <div role="status" className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
           {error
             ? `Error: ${error}`
             : info
@@ -486,35 +629,145 @@ export const LogViewer = ({
               (rowCount > 0 ? ` · rows ${(firstRow + 1).toLocaleString()}–${Math.min(rowCount, firstRow + visibleRows).toLocaleString()}` : "")
               : "Loading…"}
         </div>
-
-        <div className="flex flex-1 min-h-0" style={{ background: "#1e1e1e", color: "white" }}>
-          <div
-            ref={viewportRef}
-            tabIndex={0}
-            onKeyDown={onKeyDown}
-            className="flex-1 min-w-0 overflow-x-auto overflow-y-hidden outline-none text-sm"
-          >
-            <div style={{ transform: `translateY(${-offsetPx}px)`, minWidth: "max-content" }}>{rows}</div>
+        {exportMsg && (
+          <div className="max-w-[40%] truncate text-xs text-muted-foreground" title={exportMsg}>
+            {exportMsg}
           </div>
+        )}
+        <span className="hidden text-xs text-muted-foreground sm:inline">Export</span>
+        <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" disabled={!rowCount} onClick={() => download("txt")}>
+          <Download className="size-3.5" />
+          Text
+        </Button>
+        <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" disabled={!rowCount} onClick={() => download("csv")}>
+          <Download className="size-3.5" />
+          CSV
+        </Button>
+      </div>
 
-          {/* Scrollbar */}
-          <div
-            ref={trackRef}
-            className="w-3 relative bg-white/5 cursor-pointer"
-            onPointerDown={onTrackDown}
-          >
-            {rowCount > visibleRows && (
-              <div
-                className="absolute left-0.5 right-0.5 rounded bg-white/40 hover:bg-white/60"
-                style={{ top: thumbTop, height: thumbHeight }}
-                onPointerDown={onThumbDown}
-                onPointerMove={onThumbMove}
-                onPointerUp={onThumbUp}
-              />
-            )}
-          </div>
+      {showMinimap && (
+        <Minimap
+          baseUrl={baseUrl}
+          sessionId={sessionId}
+          filterParams={filterParams}
+          axis={minimapAxis}
+          color={minimapColor}
+          visible={visibleRef.current}
+          onJumpToLine={jumpToLine}
+        />
+      )}
+
+      {lanesField && (
+        <ThreadLanes
+          baseUrl={baseUrl}
+          sessionId={sessionId}
+          filterParams={filterParams}
+          field={lanesField.name}
+          fieldLabel={lanesField.label}
+          visible={visibleRef.current}
+          onJumpToLine={jumpToLine}
+        />
+      )}
+
+      <div className="flex flex-1 min-h-0" style={{ background: "#1e1e1e", color: "white" }}>
+        <div
+          ref={viewportRef}
+          tabIndex={0}
+          onKeyDown={onKeyDown}
+          className="flex-1 min-w-0 overflow-x-auto overflow-y-hidden outline-none text-sm"
+        >
+          <div style={{ transform: `translateY(${-offsetPx}px)`, minWidth: "max-content" }}>{rows}</div>
+        </div>
+
+        {/* Scrollbar */}
+        <div
+          ref={trackRef}
+          className="w-3 relative bg-white/5 cursor-pointer"
+          onPointerDown={onTrackDown}
+        >
+          {rowCount > visibleRows && (
+            <div
+              className="absolute left-0.5 right-0.5 rounded bg-white/40 hover:bg-white/60"
+              style={{ top: thumbTop, height: thumbHeight }}
+              onPointerDown={onThumbDown}
+              onPointerMove={onThumbMove}
+              onPointerUp={onThumbUp}
+            />
+          )}
         </div>
       </div>
+
+      {/* Search & go to line: floating panel */}
+      {searchOpen && (
+        <FloatingPanel
+          title="Search & go to line"
+          icon={<Search className="size-4 text-muted-foreground" />}
+          onClose={() => onSearchOpenChange(false)}
+          storageKey="logviewer.searchPanel"
+          defaultRect={() => ({
+            x: window.innerWidth - 460,
+            y: 120,
+            w: 440,
+            h: Math.min(520, window.innerHeight - 160),
+          })}
+        >
+          <div className="flex flex-col gap-2 border-b p-3">
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                ref={searchInputRef}
+                placeholder="Search in view…  (Ctrl+F)"
+                className="h-8 pl-8"
+                value={searchInput}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSearchInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && searchResults.length > 0) jumpToRow(searchResults[0].row);
+                }}
+              />
+            </div>
+            <div className="flex gap-2">
+              <div className="relative flex-1">
+                <Hash className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  ref={gotoInputRef}
+                  placeholder="Go to line…  (Ctrl+G)"
+                  inputMode="numeric"
+                  className="h-8 pl-8"
+                  value={gotoInput}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setGotoInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") goToLine();
+                  }}
+                />
+              </div>
+              <Button size="sm" variant="secondary" className="h-8" onClick={goToLine} disabled={!rowCount}>
+                Go
+              </Button>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 px-3 py-1.5 text-xs text-muted-foreground">
+            {isSearching && <Spinner className="size-3" />}
+            {panelStatus}
+          </div>
+
+          {/* Results */}
+          <div className="min-h-0 flex-1 overflow-auto px-1.5 pb-4">
+            {searchResults.map((r) => (
+              <button
+                type="button"
+                key={r.row}
+                className={`flex w-full items-baseline gap-2 rounded-md px-2 py-1 text-left font-mono text-xs hover:bg-accent ${r.row === highlightRow ? "bg-accent" : ""}`}
+                onClick={() => jumpToRow(r.row)}
+                title={r.text}
+              >
+                <span className="w-14 shrink-0 text-right tabular-nums text-muted-foreground">{r.line_number}</span>
+                <ResultText hit={r} q={search} columns={columns} />
+              </button>
+            ))}
+          </div>
+        </FloatingPanel>
+      )}
     </div>
   );
 };

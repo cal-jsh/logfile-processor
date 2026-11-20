@@ -11,17 +11,25 @@ import {
 import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
 import { ChevronsUpDown } from "lucide-react";
+import { cn } from "@/lib/utils";
 
 export interface SearchableMultiSelectProps {
   options: string[];
   selected: string[];
   onChange: (values: string[]) => void;
+  /** Shown on the trigger, e.g. "Domains" */
+  label?: string;
+  icon?: React.ReactNode;
+  triggerClassName?: string;
 }
 
 export default function SearchableMultiSelect({
   options,
   selected,
   onChange,
+  label,
+  icon,
+  triggerClassName,
 }: SearchableMultiSelectProps) {
   // Controlled open so we can reliably toggle from the Button
   const [open, setOpen] = useState(false);
@@ -50,16 +58,30 @@ export default function SearchableMultiSelect({
           variant="outline"
           role="combobox"
           aria-expanded={open}
-          className="w-64 justify-between"
+          className={cn("w-64 justify-between", triggerClassName)}
           onClick={() => setOpen((v) => !v)} // <-- ensures clicking opens/closes reliably
         >
-          {selected.length > 0 ? `${selected.length} selected` : "Select options..."}
-          <ChevronsUpDown className="ml-2 h-4 w-4 opacity-50" />
+          {label ? (
+            <span className="flex items-center gap-1.5">
+              {icon}
+              {label}
+              {selected.length > 0 && (
+                <span className="rounded-full bg-primary px-1.5 text-[10px] font-semibold leading-4 text-primary-foreground tabular-nums">
+                  {selected.length}
+                </span>
+              )}
+            </span>
+          ) : selected.length > 0 ? (
+            `${selected.length} selected`
+          ) : (
+            "Select options..."
+          )}
+          <ChevronsUpDown className="ml-1 h-4 w-4 opacity-50" />
         </Button>
       </PopoverTrigger>
 
       {/* add a high z-index so it won't be hidden under other elements */}
-      <PopoverContent className="p-0 w-64 z-50">
+      <PopoverContent className="p-0 w-64 z-50" align="start">
         <Command>
           <CommandInput
             placeholder="Search..."

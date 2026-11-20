@@ -1,26 +1,11 @@
-# Logfile Processor
+# Logfile Processor core
 
-## Build
-
-```shell
-cargo install cross
-```
-
-### Raspberry Pi
-```shell
-cross build --target armv7-unknown-linux-gnueabihf --release
-```
-
-### Windows 11
-```shell
-cross build --target x86_64-pc-windows-msvc --release
-```
+Library crate used by the desktop app in `frontend/src-tauri`: memory-mapped, indexed
+log files, the filter engine and the HTTP viewport API that the app serves on a
+private localhost port (`desktop_router()`).
 
 ## Test
 
-Run application via `cargo run` and then in the terminal 
 ```shell
-curl -F "file=@C:\Projects\rust\logfile-processor\backend\data\logfile1.txt" http://localhost:8080/upload
+cargo test
 ```
-
-Open [http://localhost:8080/swagger-ui/](http://localhost:8080/swagger-ui/) to see the available API

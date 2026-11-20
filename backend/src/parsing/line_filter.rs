@@ -1,51 +1,72 @@
 // local
-use crate::parsing::parser::{split_log_line, LogFields};
+use crate::parsing::format::LogFormat;
 // std
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 
-/// Level / domain / keyword filter applied to a single log line.
+/// Level / field / keyword filter applied to a single log line.
 ///
-/// `None` for a criterion means "don't filter on it".
-#[derive(Clone, Debug, Default)]
+/// `None` (or no entry) for a criterion means "don't filter on it".
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LineFilter {
     pub levels: Option<Vec<String>>,
-    pub domains: Option<Vec<String>>,
+    /// Other fields by name (`domain`, `thread`, ...): the line's value must be one of these
+    pub fields: BTreeMap<String, Vec<String>>,
     pub keywords: Option<Vec<String>>,
 }
 
+fn split_csv(s: Option<&str>) -> Option<Vec<String>> {
+    s.map(|s| s.split(',').map(|x| x.trim().to_string()).collect())
+}
+
 impl LineFilter {
-    /// Build a filter from the comma-separated query parameters of `/stream_logs`.
-    pub fn from_csv(levels: Option<&str>, domains: Option<&str>, keywords: Option<&str>) -> Self {
-        fn split(s: Option<&str>) -> Option<Vec<String>> {
-            s.map(|s| s.split(',').map(|x| x.trim().to_string()).collect())
-        }
-        Self {
-            levels: split(levels),
-            domains: split(domains),
-            keywords: split(keywords),
-        }
+    /// Build a filter from the query parameters of the view API: comma-separated
+    /// `levels` and `keywords`, and `fields` as a JSON object of value lists, e.g.
+    /// `{"domain":["core"],"thread":["12","13"]}`.
+    pub fn from_query(levels: Option<&str>, fields: Option<&str>, keywords: Option<&str>) -> Result<Self, String> {
+        let fields: BTreeMap<String, Vec<String>> = match fields {
+            Some(j) if !j.trim().is_empty() => {
+                serde_json::from_str(j).map_err(|e| format!("Invalid fields filter: {e}"))?
+            }
+            _ => BTreeMap::new(),
+        };
+        Ok(Self { levels: split_csv(levels), fields, keywords: split_csv(keywords) })
     }
 
-    /// Whether the line matches all active criteria.
-    /// Lines that don't follow the `[ts] [LEVEL] [domain] message` format never match.
-    pub fn matches(&self, line: &str) -> bool {
-        let Some(LogFields { level, domain, message, .. }) = split_log_line(line) else {
+    /// Levels, domains and keywords as comma-separated lists (tests).
+    #[cfg(test)]
+    pub fn from_csv(levels: Option<&str>, domains: Option<&str>, keywords: Option<&str>) -> Self {
+        let mut fields = BTreeMap::new();
+        if let Some(d) = split_csv(domains) {
+            fields.insert("domain".to_string(), d);
+        }
+        Self { levels: split_csv(levels), fields, keywords: split_csv(keywords) }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.levels.is_none() && self.fields.is_empty() && self.keywords.is_none()
+    }
+
+    /// Whether the line matches all active criteria. Lines that don't have the format
+    /// never match. (The scan uses [`CompiledFilter`](crate::logfile::scan::CompiledFilter),
+    /// which gives the same result faster.)
+    pub fn matches(&self, fmt: &LogFormat, line: &str) -> bool {
+        let Some(p) = fmt.parse(line) else {
             return false;
         };
-
-        let level_ok = self
-            .levels
-            .as_ref()
-            .map_or(true, |v| v.iter().any(|s| s == level));
-        let domain_ok = self
-            .domains
-            .as_ref()
-            .map_or(true, |v| v.iter().any(|s| s == domain));
+        let field = |name: &str| fmt.field_index(name).map(|i| p.get(line, i));
+        let level_ok = self.levels.as_ref().map_or(true, |v| {
+            fmt.level_field().is_some_and(|l| v.iter().any(|s| s == p.get(line, l)))
+        });
+        let fields_ok = self
+            .fields
+            .iter()
+            .all(|(name, values)| field(name).is_some_and(|f| values.iter().any(|s| s == f)));
+        let message = fmt.message_field().map_or(line, |m| p.get(line, m));
         let keyword_ok = self
             .keywords
             .as_ref()
             .map_or(true, |v| v.iter().any(|kw| message.contains(kw.as_str())));
-        level_ok && domain_ok && keyword_ok
+        level_ok && fields_ok && keyword_ok
     }
 }
 
@@ -115,6 +136,11 @@ impl ContextWindow {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::parsing::format::LEGACY_PATTERN;
+
+    fn legacy() -> LogFormat {
+        LogFormat::compile(LEGACY_PATTERN).unwrap()
+    }
 
     fn line(n: u64, matched: bool) -> String {
         let msg = if matched { "BOOM" } else { "filler" };
@@ -125,11 +151,12 @@ mod tests {
     /// Returns (line_number, context) pairs.
     fn run(n: u64, matches: &[u64], context: usize) -> Vec<(u64, bool)> {
         let filter = LineFilter::from_csv(None, None, Some("BOOM"));
+        let fmt = legacy();
         let mut win = ContextWindow::new(context);
         let mut out = Vec::new();
         for i in 1..=n {
             let l = line(i, matches.contains(&i));
-            let m = filter.matches(&l);
+            let m = filter.matches(&fmt, &l);
             for o in win.push(i, l.clone(), m) {
                 // the text must belong to the reported line number
                 assert!(o.line.contains(&format!("line{} ", o.line_number)));
@@ -199,6 +226,7 @@ mod tests {
     #[test]
     fn non_log_lines_count_toward_line_numbers() {
         let filter = LineFilter::from_csv(None, None, Some("BOOM"));
+        let fmt = legacy();
         let mut win = ContextWindow::new(1);
         let lines = [
             "not a log line",
@@ -208,7 +236,7 @@ mod tests {
         ];
         let mut out = Vec::new();
         for (i, l) in lines.iter().enumerate() {
-            out.extend(win.push(i as u64 + 1, l.to_string(), filter.matches(l)));
+            out.extend(win.push(i as u64 + 1, l.to_string(), filter.matches(&fmt, l)));
         }
         let got: Vec<(u64, bool)> = out.iter().map(|o| (o.line_number, o.context)).collect();
         assert_eq!(got, vec![(2, true), (3, false), (4, true)]);
@@ -216,9 +244,23 @@ mod tests {
 
     #[test]
     fn level_and_domain_filters() {
+        let fmt = legacy();
         let f = LineFilter::from_csv(Some("WARN, ERROR"), Some("Net"), None);
-        assert!(f.matches("[t] [ERROR] [Net] x"));
-        assert!(!f.matches("[t] [INFO] [Net] x"));
-        assert!(!f.matches("[t] [ERROR] [Core] x"));
+        assert!(f.matches(&fmt, "[t] [ERROR] [Net] x"));
+        assert!(!f.matches(&fmt, "[t] [INFO] [Net] x"));
+        assert!(!f.matches(&fmt, "[t] [ERROR] [Core] x"));
+    }
+
+    #[test]
+    fn field_filters_from_json() {
+        let fmt = LogFormat::compile("[%{time}] [%t] [%l] %v").unwrap();
+        let f = LineFilter::from_query(None, Some(r#"{"thread":["7","9"]}"#), Some("go")).unwrap();
+        assert!(f.matches(&fmt, "[t] [7] [INFO] go"));
+        assert!(!f.matches(&fmt, "[t] [8] [INFO] go"));
+        assert!(!f.matches(&fmt, "[t] [7] [INFO] stop"));
+        // a field the format does not have matches nothing
+        let f = LineFilter::from_query(None, Some(r#"{"domain":["x"]}"#), None).unwrap();
+        assert!(!f.matches(&fmt, "[t] [7] [INFO] go"));
+        assert!(LineFilter::from_query(None, Some("{nope"), None).is_err());
     }
 }

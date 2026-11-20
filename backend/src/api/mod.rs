@@ -1,3 +1,5 @@
-pub mod filter;
-pub mod upload;
+pub mod format;
+pub mod lanes;
+pub mod minimap;
 pub mod view;
+pub mod version;

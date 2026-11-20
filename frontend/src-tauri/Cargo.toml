@@ -1,0 +1,26 @@
+[package]
+name = "logfile_processor_desktop"
+version = "0.1.0"
+description = "Log file processor desktop app"
+edition = "2021"
+# `tauri dev` / `cargo run` start the viewer; `logfile_processor_cli` is its console companion
+default-run = "logfile_processor_desktop"
+
+[lib]
+name = "logfile_processor_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# The existing backend: memory-mapped index, filter engine and HTTP viewport API
+logfile_processor = { path = "../../backend" }
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tokio = { version = "1", features = ["net", "rt-multi-thread", "macros"] }
+axum = "0.8"
+serde = { version = "1", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+tauri-plugin-opener = "2"

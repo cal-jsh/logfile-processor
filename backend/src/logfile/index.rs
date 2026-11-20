@@ -237,6 +237,15 @@ impl<'a> Iterator for LineIter<'a> {
     }
 }
 
+/// The first [`SAMPLE_LINES`](crate::parsing::format::SAMPLE_LINES) lines of the file,
+/// decoded (invalid UTF-8 replaced), for detecting or checking the line format.
+pub fn sample_lines(file: &LogFile) -> Vec<String> {
+    file.lines_from(0)
+        .take(crate::parsing::format::SAMPLE_LINES)
+        .map(|(_, b)| display_text(b, 64 * 1024).0)
+        .collect()
+}
+
 /// Decode a line for display, cutting it at `max_bytes` (on a UTF-8 character boundary).
 /// Returns the text and whether it was cut.
 pub fn display_text(line: &[u8], max_bytes: usize) -> (String, bool) {
