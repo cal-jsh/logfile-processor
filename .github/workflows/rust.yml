@@ -1,24 +1,200 @@
-name: Rust Backend build & test
+# CI for the desktop app (Tauri 2, Windows only).
+#
+#   backend/              library crate `logfile_processor` (index, filters, viewport API)
+#   frontend/             React + Vite UI
+#   frontend/src-tauri/   desktop shell: `logfile_processor_desktop` (viewer, GUI exe)
+#                         and `logfile_processor_cli` (console companion exe)
+#
+# Every push to main and every pull request: type-check and build the UI, run the
+# tests of both crates.
+#
+# A pushed version tag (v1.2.3) additionally builds the release and puts it on a
+# draft GitHub release: NSIS installer, MSI installer and logfile_processor_cli.exe.
+# Publish the draft by hand once it looks right.
+#
+# Updater artifacts (signed installer + latest.json for the in-app "Update" button)
+# are only produced when the repository secret TAURI_SIGNING_PRIVATE_KEY exists.
+# Without it the release is built exactly the same, just without them.
+
+name: CI
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
+    tags: ["v*"]
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
-
-    runs-on: ubuntu-latest
-
+  test:
+    name: Build & test
+    runs-on: windows-latest
     steps:
-    - uses: actions/checkout@v4
-    - name: Build
-      run: cargo build --verbose
-      working-directory: ./backend
-    - name: Run tests
-      run: cargo test --verbose
-      working-directory: ./backend
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            backend -> target
+            frontend/src-tauri -> target
+
+      # --legacy-peer-deps: vite 8 vs the peer range of @tailwindcss/vite
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci --legacy-peer-deps
+
+      # tsconfig.json has "files": [] (it only carries the @/ path alias), so a plain
+      # `tsc` checks nothing. Check src/ through a throwaway config instead.
+      - name: Type-check frontend
+        working-directory: frontend
+        shell: bash
+        run: |
+          cat > tsconfig.ci.json <<'EOF'
+          {
+            "extends": "./tsconfig.json",
+            "include": ["src"],
+            "compilerOptions": {
+              "target": "ES2022",
+              "lib": ["ES2022", "DOM", "DOM.Iterable"],
+              "module": "ESNext",
+              "moduleResolution": "bundler",
+              "jsx": "react-jsx",
+              "strict": true,
+              "skipLibCheck": true,
+              "noEmit": true,
+              "isolatedModules": true,
+              "allowImportingTsExtensions": true,
+              "types": ["vite/client"]
+            }
+          }
+          EOF
+          npx tsc -p tsconfig.ci.json
+
+      # Also required by the Tauri crate: tauri::generate_context! embeds frontend/dist
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+      - name: Test backend
+        working-directory: backend
+        run: cargo test --locked
+
+      - name: Test desktop app and CLI
+        working-directory: frontend/src-tauri
+        run: cargo test --locked
+
+  release:
+    name: Release
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: frontend/src-tauri -> target
+
+      # The updater compares this version with the installed one, so a tag that
+      # disagrees with the app's own version would ship a release nobody gets offered.
+      - name: Check tag matches app version
+        shell: bash
+        run: |
+          app_version=$(node -p "require('./frontend/src-tauri/tauri.conf.json').version")
+          if [ "${GITHUB_REF_NAME}" != "v${app_version}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match tauri.conf.json version ${app_version} (expected v${app_version})"
+            exit 1
+          fi
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci --legacy-peer-deps
+
+      # ---- Updater signing (optional) -------------------------------------------
+      # Only with the TAURI_SIGNING_PRIVATE_KEY secret: turn on
+      # bundle.createUpdaterArtifacts for this build (in the CI checkout only), and
+      # hand the key to the build, so tauri signs the installers (.sig files) and
+      # tauri-action adds latest.json to the release.
+      # Without the secret this step changes nothing and the release simply has no
+      # updater files. Delete this step to switch signing off again.
+      - name: Updater signing (only if the key secret exists)
+        shell: bash
+        env:
+          KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "::notice::TAURI_SIGNING_PRIVATE_KEY is not set: release built without updater artifacts (no .sig, no latest.json)."
+            exit 0
+          fi
+          node -e "
+            const fs = require('fs');
+            const p = 'frontend/src-tauri/tauri.conf.json';
+            const c = JSON.parse(fs.readFileSync(p, 'utf8'));
+            c.bundle.createUpdaterArtifacts = true;
+            fs.writeFileSync(p, JSON.stringify(c, null, 2));
+          "
+          {
+            echo "TAURI_SIGNING_PRIVATE_KEY<<__KEY_EOF__"
+            echo "$KEY"
+            echo "__KEY_EOF__"
+            # Empty when the key has no password; must still be set, or the build asks for one
+            echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD<<__PW_EOF__"
+            echo "$KEY_PASSWORD"
+            echo "__PW_EOF__"
+          } >> "$GITHUB_ENV"
+          echo "Updater signing key found: building signed updater artifacts."
+      # ---------------------------------------------------------------------------
+
+      # Runs `npm run tauri build` in frontend/ (beforeBuildCommand builds the UI),
+      # creates the draft release for this tag and uploads the NSIS + MSI installers
+      # (plus .sig files and latest.json when signing is on).
+      - name: Build installers and create draft release
+        uses: tauri-apps/tauri-action@v0
+        with:
+          projectPath: frontend
+          tagName: ${{ github.ref_name }}
+          releaseName: Logfile Processor ${{ github.ref_name }}
+          releaseBody: |
+            Windows installers (NSIS `-setup.exe` or `.msi`) and the standalone command line tool `logfile_processor_cli.exe`.
+            The builds are not code-signed yet, so Windows SmartScreen warns on first start.
+          releaseDraft: true
+          prerelease: false
+          includeUpdaterJson: true
+
+      # The installers already contain the CLI next to the viewer; this attaches it
+      # on its own for people who only want the command line tool.
+      - name: Attach logfile_processor_cli.exe
+        working-directory: frontend/src-tauri
+        shell: bash
+        run: |
+          cargo build --release --locked --bin logfile_processor_cli
+          gh release upload "${GITHUB_REF_NAME}" target/release/logfile_processor_cli.exe --clobber --repo "${GITHUB_REPOSITORY}"
