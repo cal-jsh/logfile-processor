@@ -1,33 +1,97 @@
 # Logfile Processor
 
-Allows to search, filter and analyze log messages in the form of 
-```terminal
-[2025-11-17 12:50:00.763190172] [DEBUG] [network] Data received
-[2025-11-17 12:50:03.763190172] [WARN] [network] Process completed successfully
-[2025-11-17 12:50:04.153136172] [INFO] [core] Starting process
+[![CI](https://github.com/cal-jsh/logfile-processor/actions/workflows/rust.yml/badge.svg)](https://github.com/cal-jsh/logfile-processor/actions/workflows/rust.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+A fast Windows log viewer for files of many gigabytes. Open a log in place, filter it
+by level, domain, thread or keyword, and see where things happen across the whole file.
+
+![Opening a 5 GB log, filtering by level and keyword, minimap and thread lanes](docs/demo.gif)
+
+_A 5 GB, 52 million line log: opened in about 3 seconds, filters in a fraction of a second._
+
+## Features
+
+- **Any size.** Files are memory-mapped and indexed in parallel, never copied or loaded
+  into memory. Scrolling and filtering stay fast at tens of GB.
+- **Filters.** Log levels, domains, threads (or any other field of the line format)
+  and keywords, with context lines around each match. Search and go to line with
+  Ctrl+F / Ctrl+G.
+- **Log formats.** spdlog-style formats are detected automatically (timestamp, level,
+  logger, thread id or name). Anything else can be described with a pattern in the
+  Log format dialog, with a live preview.
+- **Minimap.** Where levels or domains occur across the file, by line or by time. Click
+  to jump.
+- **Thread lanes.** One lane per thread (or domain) over time, coloured by level.
+  Ctrl+wheel to zoom, click to jump to the line.
+- **Export.** The current view as text or CSV.
+- **Command line.** Open files from a terminal, or filter without a window
+  (see below).
+- **Recent files**, drag and drop onto the window or the exe, and a Report a bug
+  button that fills in version details.
+
+## Install
+
+Download the installer (`.exe` or `.msi`) from the
+[latest release](https://github.com/cal-jsh/logfile-processor/releases/latest).
+Requires Windows 10 or 11 (WebView2 is installed with the app if missing).
+
+## Update
+
+The app checks GitHub for a newer release when a window opens; the **Update** button
+in the sidebar then reads "Update to x.y.z". It shows the release notes, downloads the
+installer with a progress bar, checks its signature against the key built into the app,
+and installs and restarts. Other open windows of the app close during the install.
+Only published releases are offered, not drafts.
+
+## Command line
+
+`logfile_processor_cli.exe` is installed next to the viewer (run it from the install
+folder or add that folder to `PATH`).
+
+```powershell
+# Open files, one window each
+logfile_processor_cli app.log other.log
+
+# Errors and criticals of two domains, 3 lines of context, in the terminal
+logfile_processor_cli app.log -l error,critical -d net.http,net.tcp -C 3
+
+# Lines mentioning timeout or refused, as CSV
+logfile_processor_cli app.log -k timeout -k refused -o timeouts.csv
 ```
 
-## Example
+`-h` lists all options. Exit code 0 means ok (also when nothing matched), 1 a file
+problem, 2 a bad option.
 
-![Logfile Processor Example](./docs/example.png)
+## Build from source
 
-## Desktop app (Tauri 2)
-
-A Windows desktop app. Log files are opened in place by path (native "Open file"
-dialog, drag and drop, or a path on the command line) and memory-mapped; nothing is
-copied. The React UI is in `frontend/`, the Tauri shell in `frontend/src-tauri`, and the
-core in `backend/` (a library crate whose viewport API runs inside the app on a random
-`127.0.0.1` port).
-
+Needs Rust (stable), Node.js 22 and the
+[Tauri prerequisites for Windows](https://v2.tauri.app/start/prerequisites/).
 From `frontend/`:
 
-```shell
+```powershell
 npm install --legacy-peer-deps   # once
 npm run desktop                  # dev run: Vite dev server + app window
 npm run desktop:build            # release exe + NSIS and MSI installers
 ```
 
-The release exe is `frontend/src-tauri/target/release/logfile_processor_desktop.exe`,
-the installers are under `frontend/src-tauri/target/release/bundle/`.
+The exe lands in `frontend/src-tauri/target/release/`, the installers in
+`frontend/src-tauri/target/release/bundle/`. Tests: `cargo test` in `backend/` and in
+`frontend/src-tauri/`.
 
-Core tests: `cargo test` in `backend/`.
+Releases are built by CI from a `v*` tag that matches the version in
+`frontend/src-tauri/tauri.conf.json`. Updater signing needs the repository secret
+`TAURI_SIGNING_PRIVATE_KEY`; the matching public key is in `tauri.conf.json`.
+
+## Project layout
+
+| Path | Contents |
+|---|---|
+| `backend/` | Core library: memory-mapped index, log formats, filter engine, viewport API |
+| `frontend/src/` | React UI |
+| `frontend/src-tauri/` | Tauri shell, command line, console companion exe |
+| `docs/` | [Architecture](docs/desktop-architecture-plan.md), demo GIF |
+
+## License
+
+[MIT](LICENSE)

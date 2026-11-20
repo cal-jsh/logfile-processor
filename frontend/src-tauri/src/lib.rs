@@ -294,6 +294,10 @@ fn run_with(initial: Option<Result<String, String>>) {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        // "Update" in the sidebar: checks latest.json of the newest published GitHub
+        // release, verifies the installer's signature against plugins.updater.pubkey
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .setup(|app| {
             // Bind before the window loads, so the UI can ask for the URL right away.
             let listener = std::net::TcpListener::bind("127.0.0.1:0")?;

@@ -19,10 +19,22 @@ import { Button } from "./ui/button";
 import { canonicalLevel, colorMap, LEVEL_ORDER } from "../lib/colorMap";
 import type { MinimapAxis } from "./Minimap";
 import { cn } from "@/lib/utils";
-import { Bug, FileText, SquareTerminal, FolderOpen, Minus, Plus, Search, SlidersHorizontal } from "lucide-react";
-import { useState } from "react";
+import {
+  Bug,
+  CircleArrowUp,
+  FileText,
+  SquareTerminal,
+  FolderOpen,
+  Minus,
+  Plus,
+  Search,
+  SlidersHorizontal,
+} from "lucide-react";
+import { useEffect, useState } from "react";
 import BugReportDialog from "./BugReportDialog";
 import CliHelpDialog from "./CliHelpDialog";
+import UpdateDialog from "./UpdateDialog";
+import { backgroundCheck, type Update } from "../lib/updater";
 import FormatDialog from "./FormatDialog";
 
 interface Props {
@@ -156,6 +168,16 @@ export default function LogSummarySidebar({
   const levelTotal = levelCounts.reduce((a, b) => a + b.count, 0);
   const [bugReportOpen, setBugReportOpen] = useState(false);
   const [cliHelpOpen, setCliHelpOpen] = useState(false);
+  const [updateOpen, setUpdateOpen] = useState(false);
+  // A newer release found by the quiet check at start (or by the dialog), for the button
+  const [pendingUpdate, setPendingUpdate] = useState<Update | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    backgroundCheck().then((u) => !cancelled && setPendingUpdate(u));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   const otherLines =
     summary.line_count != null && summary.line_count !== summary.total_lines
       ? summary.line_count - summary.total_lines
@@ -493,10 +515,29 @@ export default function LogSummarySidebar({
               <span>Report a bug</span>
             </SidebarMenuButton>
           </SidebarMenuItem>
+          <SidebarMenuItem>
+            <SidebarMenuButton
+              tooltip={pendingUpdate ? `Update to ${pendingUpdate.version}` : "Check for updates"}
+              onClick={() => setUpdateOpen(true)}
+              className={pendingUpdate ? "text-primary" : "text-muted-foreground"}
+            >
+              <span className="relative shrink-0">
+                <CircleArrowUp className="size-4" />
+                {pendingUpdate && (
+                  <span
+                    aria-hidden
+                    className="absolute -top-0.5 -right-0.5 size-2 rounded-full bg-primary ring-2 ring-sidebar"
+                  />
+                )}
+              </span>
+              <span>{pendingUpdate ? `Update to ${pendingUpdate.version}` : "Update"}</span>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
         </SidebarMenu>
       </SidebarFooter>
       <CliHelpDialog open={cliHelpOpen} onOpenChange={setCliHelpOpen} />
       <BugReportDialog open={bugReportOpen} onOpenChange={setBugReportOpen} />
+      <UpdateDialog open={updateOpen} onOpenChange={setUpdateOpen} onChecked={setPendingUpdate} />
       <FormatDialog
         open={formatOpen}
         onOpenChange={setFormatOpen}
