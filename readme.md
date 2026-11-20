@@ -80,7 +80,9 @@ The exe lands in `frontend/src-tauri/target/release/`, the installers in
 `frontend/src-tauri/`.
 
 Releases are built by CI from a `v*` tag that matches the version in
-`frontend/src-tauri/tauri.conf.json`. Updater signing needs the repository secret
+`frontend/src-tauri/tauri.conf.json`. `npm run set-version 1.2.3` (in `frontend/`) sets
+that version in every file that carries it (tauri.conf.json, package.json, both
+Cargo.toml files and the lock files); commit that, then tag the commit `v1.2.3`. Updater signing needs the repository secret
 `TAURI_SIGNING_PRIVATE_KEY`; the matching public key is in `tauri.conf.json`.
 
 ## Project layout
