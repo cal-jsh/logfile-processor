@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { LogViewer } from "../components/LogViewer";
 import type { LogSummary } from "../lib/logSummary";
 import SearchableMultiSelect from "../components/SearchableMultiSelect";
@@ -6,8 +6,8 @@ import LogSummarySidebar from "../components/LogSummarySidebar";
 import { SidebarProvider, SidebarInset, SidebarTrigger } from "../components/ui/sidebar";
 import { Button } from "../components/ui/button";
 import { Separator } from "../components/ui/separator";
-import { colorMap, LEVEL_ORDER } from "../lib/colorMap";
-import { Filter, Layers, Tag, X } from "lucide-react";
+import { levelColor, levelRank } from "../lib/colorMap";
+import { Filter, GitBranch, Layers, ListFilter, Tag, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { MinimapAxis } from "../components/Minimap";
 
@@ -20,18 +20,28 @@ interface DashboardProps {
     fileName?: string;
     /** Close this file and go back to the start page */
     onClose?: () => void;
+    /** Reopen the file with another line format (null: detect it) */
+    onChangeFormat: (pattern: string | null) => Promise<void>;
 }
 
-export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summary, fileName, onClose }) => {
+const FIELD_ICONS: Record<string, React.ReactNode> = {
+    domain: <Layers className="size-3.5" />,
+    thread: <GitBranch className="size-3.5" />,
+};
+
+const plural = (label: string) => (label.endsWith("s") ? label : `${label}s`);
+
+export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summary, fileName, onClose, onChangeFormat }) => {
     const [selectedLevels, setSelectedLevels] = useState<string[]>([]);
-    const [selectedDomains, setSelectedDomains] = useState<string[]>([]);
+    // values per filterable field (domain, thread, ...): none selected = all
+    const [selectedFields, setSelectedFields] = useState<Record<string, string[]>>({});
     const [selectedKeywords, setSelectedKeywords] = useState<string[]>([]);
     const [newKeyword, setNewKeyword] = useState<string>("");
 
     const [contextLines, setContextLines] = useState<number>(0);
 
     const [debouncedLevels, setDebouncedLevels] = useState<string>("");
-    const [debouncedDomains, setDebouncedDomains] = useState<string>("");
+    const [debouncedFields, setDebouncedFields] = useState<string>("");
     const [debouncedKeywords, setDebouncedKeywords] = useState<string>("");
 
     const [showDelta, setShowDelta] = useState(false); // controls delta display
@@ -58,10 +68,43 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
             /* storage unavailable: keep it for this session only */
         }
     };
+    // what the minimap colours by: "level" or a text field's name (e.g. "domain")
+    const [minimapColor, setMinimapColorState] = useState<string>(() => {
+        try {
+            return localStorage.getItem("logviewer.minimapColor") || "level";
+        } catch {
+            return "level";
+        }
+    });
+    const setMinimapColor = (v: string) => {
+        setMinimapColorState(v);
+        try {
+            localStorage.setItem("logviewer.minimapColor", v);
+        } catch {
+            /* storage unavailable: keep it for this session only */
+        }
+    };
     const setShowMinimap = (v: boolean) => {
         setShowMinimapState(v);
         try {
             localStorage.setItem("logviewer.showMinimap", String(v));
+        } catch {
+            /* storage unavailable: keep it for this session only */
+        }
+    };
+    // fields not shown as columns, by name; remembered per browser for all files
+    const [hiddenColumns, setHiddenColumnsState] = useState<string[]>(() => {
+        try {
+            const v = JSON.parse(localStorage.getItem("logviewer.hiddenColumns") ?? "[]");
+            return Array.isArray(v) ? v.filter((x) => typeof x === "string") : [];
+        } catch {
+            return [];
+        }
+    });
+    const setHiddenColumns = (v: string[]) => {
+        setHiddenColumnsState(v);
+        try {
+            localStorage.setItem("logviewer.hiddenColumns", JSON.stringify(v));
         } catch {
             /* storage unavailable: keep it for this session only */
         }
@@ -72,27 +115,38 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
     useEffect(() => {
         const timer = setTimeout(() => {
             setDebouncedLevels(selectedLevels.join(","));
-            setDebouncedDomains(selectedDomains.join(","));
+            const active = Object.entries(selectedFields).filter(([, v]) => v.length > 0);
+            setDebouncedFields(active.length ? JSON.stringify(Object.fromEntries(active)) : "");
             setDebouncedKeywords(selectedKeywords.join(","));
         }, 300);
         return () => clearTimeout(timer);
-    }, [selectedLevels, selectedDomains, selectedKeywords]);
+    }, [selectedLevels, selectedFields, selectedKeywords]);
 
     // levels in the file, in severity order (unknown ones last)
-    const fileLevels = Object.keys(summary.levels || {});
-    const levelOptions = [
-        ...LEVEL_ORDER.filter((l) => fileLevels.includes(l)),
-        ...fileLevels.filter((l) => !(LEVEL_ORDER as readonly string[]).includes(l)),
-    ];
-    const domainOptions = summary.unique_domains || [];
+    // colour by a field only if this file's format has it (the choice is kept for other files)
+    const effectiveMinimapColor = summary.format.columns.some((c) => c.kind === "text" && c.name === minimapColor)
+        ? minimapColor
+        : "level";
+    const levelOptions = Object.keys(summary.levels || {}).sort((a, b) => levelRank(a) - levelRank(b) || a.localeCompare(b));
+    // a filter per field with more than one value (domain, thread, ...)
+    const fieldFilters = (summary.fields ?? []).filter((f) => f.values.length > 1 || f.more);
+
+    // widest value per field (from the summary), so the viewer can line the columns up
+    const columnWidths = useMemo(() => {
+        const w: Record<string, number> = {};
+        for (const f of summary.fields ?? []) w[f.name] = Math.min(24, Math.max(0, ...f.values.map((v) => v.length)));
+        const level = summary.format.columns.find((c) => c.kind === "level");
+        if (level) w[level.name] = Math.max(0, ...Object.keys(summary.levels ?? {}).map((l) => l.length));
+        return w;
+    }, [summary]);
 
     const levelsParam = debouncedLevels ? `&levels=${encodeURIComponent(debouncedLevels)}` : "";
-    const domainsParam = debouncedDomains ? `&domains=${encodeURIComponent(debouncedDomains)}` : "";
+    const fieldsParam = debouncedFields ? `&fields=${encodeURIComponent(debouncedFields)}` : "";
     const keywordsParam = debouncedKeywords ? `&keywords=${encodeURIComponent(debouncedKeywords)}` : "";
 
     // Changing the filter triggers one scan on the backend; changing the context
     // reuses its result (the backend keeps match line numbers, not text).
-    const filterParams = `${levelsParam}${domainsParam}${keywordsParam}`;
+    const filterParams = `${levelsParam}${fieldsParam}${keywordsParam}`;
 
     const toggleLevel = (l: string) =>
         setSelectedLevels((s) => (s.includes(l) ? s.filter((x) => x !== l) : [...s, l]));
@@ -103,10 +157,11 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
         setNewKeyword("");
     };
 
-    const hasFilter = selectedLevels.length + selectedDomains.length + selectedKeywords.length > 0;
+    const fieldCount = Object.values(selectedFields).reduce((a, v) => a + v.length, 0);
+    const hasFilter = selectedLevels.length + fieldCount + selectedKeywords.length > 0;
     const clearFilters = () => {
         setSelectedLevels([]);
-        setSelectedDomains([]);
+        setSelectedFields({});
         setSelectedKeywords([]);
         setNewKeyword("");
     };
@@ -115,6 +170,11 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
         <SidebarProvider defaultOpen={true}>
             <LogSummarySidebar
                 summary={summary}
+                baseUrl={baseUrl}
+                sessionId={sessionId}
+                onChangeFormat={onChangeFormat}
+                hiddenColumns={hiddenColumns}
+                setHiddenColumns={setHiddenColumns}
                 fileName={fileName}
                 onOpenAnother={onClose}
                 searchOpen={searchOpen}
@@ -125,6 +185,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
                 setShowMinimap={setShowMinimap}
                 minimapAxis={minimapAxis}
                 setMinimapAxis={setMinimapAxis}
+                minimapColor={effectiveMinimapColor}
+                setMinimapColor={setMinimapColor}
                 contextLines={contextLines}
                 setContextLines={setContextLines}
             />
@@ -145,7 +207,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
                         <div className="flex items-center gap-1" role="group" aria-label="Log levels">
                             {levelOptions.map((l) => {
                                 const on = selectedLevels.includes(l);
-                                const color = colorMap[l] ?? "currentColor";
+                                const color = levelColor(l) ?? "#6b6b6b";
                                 return (
                                     <button
                                         key={l}
@@ -168,17 +230,22 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
                             })}
                         </div>
 
-                        <Separator orientation="vertical" className="hidden h-5! sm:block" />
+                        {levelOptions.length > 0 && fieldFilters.length > 0 && (
+                            <Separator orientation="vertical" className="hidden h-5! sm:block" />
+                        )}
 
-                        {/* Domains */}
-                        <SearchableMultiSelect
-                            options={domainOptions}
-                            selected={selectedDomains}
-                            onChange={setSelectedDomains}
-                            label="Domains"
-                            icon={<Layers className="size-3.5" />}
-                            triggerClassName="h-7 w-auto gap-1 rounded-full px-3 text-xs font-medium"
-                        />
+                        {/* Other fields of the format: domain, thread, ... */}
+                        {fieldFilters.map((f) => (
+                            <SearchableMultiSelect
+                                key={f.name}
+                                options={f.values}
+                                selected={selectedFields[f.name] ?? []}
+                                onChange={(v) => setSelectedFields((s) => ({ ...s, [f.name]: v }))}
+                                label={plural(f.label)}
+                                icon={FIELD_ICONS[f.name] ?? <ListFilter className="size-3.5" />}
+                                triggerClassName="h-7 w-auto gap-1 rounded-full px-3 text-xs font-medium"
+                            />
+                        ))}
 
                         {/* Keywords: tag input */}
                         <div className="flex h-7 min-w-56 flex-1 items-center gap-1 rounded-full border bg-background pl-2.5 pr-1 focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/50">
@@ -231,10 +298,14 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
                             baseUrl={baseUrl}
                             sessionId={sessionId}
                             filterParams={filterParams}
+                            columns={summary.format.columns}
+                            hiddenColumns={hiddenColumns}
+                            columnWidths={columnWidths}
                             context={contextLines}
                             showDelta={showDelta}
                             showMinimap={showMinimap}
                             minimapAxis={minimapAxis}
+                            minimapColor={effectiveMinimapColor}
                             searchOpen={searchOpen}
                             onSearchOpenChange={setSearchOpen}
                         />

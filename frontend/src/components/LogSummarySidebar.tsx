@@ -16,15 +16,24 @@ import {
 } from "./ui/sidebar";
 import { Checkbox } from "./ui/checkbox";
 import { Button } from "./ui/button";
-import { colorMap, LEVEL_ORDER } from "../lib/colorMap";
+import { canonicalLevel, colorMap, LEVEL_ORDER } from "../lib/colorMap";
 import type { MinimapAxis } from "./Minimap";
 import { cn } from "@/lib/utils";
-import { Bug, FileText, FolderOpen, Minus, Plus, Search } from "lucide-react";
+import { Bug, FileText, FolderOpen, Minus, Plus, Search, SlidersHorizontal } from "lucide-react";
 import { useState } from "react";
 import BugReportDialog from "./BugReportDialog";
+import FormatDialog from "./FormatDialog";
 
 interface Props {
   summary: LogSummary;
+  /** The in-process API and the session, for the format preview */
+  baseUrl: string;
+  sessionId: string;
+  /** Reopen the file with another line format (null: detect it) */
+  onChangeFormat: (pattern: string | null) => Promise<void>;
+  /** Names of the fields not shown as columns */
+  hiddenColumns: string[];
+  setHiddenColumns: (v: string[]) => void;
   /** Path (desktop) or name (web) of the open file */
   fileName?: string;
   /** Close this file and pick another one */
@@ -37,6 +46,9 @@ interface Props {
   setShowMinimap: (v: boolean) => void;
   minimapAxis: MinimapAxis;
   setMinimapAxis: (v: MinimapAxis) => void;
+  /** "level", or the name of a text field (e.g. "domain") */
+  minimapColor: string;
+  setMinimapColor: (v: string) => void;
   contextLines: number;
   setContextLines: (v: number) => void;
 }
@@ -55,11 +67,9 @@ function formatDuration(ms: number): string {
   return `${sec}s`;
 }
 
-function duration(start?: string | null, stop?: string | null): string | null {
-  if (!start || !stop) return null;
-  const a = new Date(start).getTime();
-  const b = new Date(stop).getTime();
-  if (!Number.isFinite(a) || !Number.isFinite(b) || b < a) return null;
+/** From the times the backend read with the file's format (ms, log clock) */
+function duration(a?: number | null, b?: number | null): string | null {
+  if (a == null || b == null || b < a) return null;
   return formatDuration(b - a);
 }
 
@@ -83,6 +93,11 @@ function Stat({ label, value, title }: { label: string; value: string; title?: s
 
 export default function LogSummarySidebar({
   summary,
+  baseUrl,
+  sessionId,
+  onChangeFormat,
+  hiddenColumns,
+  setHiddenColumns,
   fileName,
   onOpenAnother,
   searchOpen,
@@ -93,11 +108,36 @@ export default function LogSummarySidebar({
   setShowMinimap,
   minimapAxis,
   setMinimapAxis,
+  minimapColor,
+  setMinimapColor,
   contextLines,
   setContextLines,
 }: Props) {
-  const dur = duration(summary.start_timestamp, summary.stop_timestamp);
-  const levelCounts = LEVEL_ORDER.map((l) => ({ level: l, count: summary.levels?.[l] ?? 0 }));
+  const dur = duration(summary.start_ms, summary.stop_ms);
+  // spdlog writes "info", "warning", ...: count them under the known levels
+  const levelCounts = LEVEL_ORDER.map((l) => ({
+    level: l,
+    count: Object.entries(summary.levels ?? {})
+      .filter(([name]) => canonicalLevel(name) === l)
+      .reduce((a, [, n]) => a + n, 0),
+  }));
+  const [formatOpen, setFormatOpen] = useState(false);
+  const format = summary.format;
+  const fit = format.sample_lines > 0 ? format.sample_matched / format.sample_lines : 1;
+  // fields that can be hidden: all but the message
+  const optionalColumns = format.columns.filter((c) => c.kind !== "message");
+  // the minimap can colour by level or by any text field (domain first)
+  const colorOptions: { value: string; label: string; title: string }[] = [
+    { value: "level", label: "Level", title: "Most severe log level of the lines in each column" },
+    ...format.columns
+      .filter((c) => c.kind === "text")
+      .sort((a, b) => Number(b.name === "domain") - Number(a.name === "domain"))
+      .map((c) => ({
+        value: c.name,
+        label: c.label,
+        title: `${c.label} with the most lines in each column, grouped by the part before the first dot (core.algo and core.proc are both core)`,
+      })),
+  ];
   const levelTotal = levelCounts.reduce((a, b) => a + b.count, 0);
   const [bugReportOpen, setBugReportOpen] = useState(false);
   const otherLines =
@@ -227,6 +267,29 @@ export default function LogSummarySidebar({
 
         <SidebarSeparator className="data-[orientation=horizontal]:w-auto group-data-[collapsible=icon]:hidden" />
 
+        {/* Line format: detected or set by the user */}
+        <SidebarGroup className="group-data-[collapsible=icon]:hidden">
+          <SidebarGroupLabel>Log format</SidebarGroupLabel>
+          <SidebarGroupContent className="flex flex-col gap-1.5 px-2">
+            <button
+              type="button"
+              onClick={() => setFormatOpen(true)}
+              title={`${format.pattern}\n\nClick to change`}
+              className="group/format flex items-center gap-2 rounded-md border bg-background px-2 py-1.5 text-left hover:bg-accent"
+            >
+              <code className="min-w-0 flex-1 truncate font-mono text-xs">{format.pattern}</code>
+              <SlidersHorizontal className="size-3.5 shrink-0 text-muted-foreground group-hover/format:text-foreground" />
+            </button>
+            <div className={cn("text-[11px]", fit < 0.5 || format.raw ? "text-amber-600" : "text-muted-foreground")}>
+              {format.raw
+                ? "No known format found: lines shown as they are"
+                : `${format.detected ? "Detected" : "Set by you"} · fits ${format.sample_matched.toLocaleString()} of the first ${format.sample_lines.toLocaleString()} lines`}
+            </div>
+          </SidebarGroupContent>
+        </SidebarGroup>
+
+        <SidebarSeparator className="data-[orientation=horizontal]:w-auto group-data-[collapsible=icon]:hidden" />
+
         {/* Display options */}
         <SidebarGroup className="group-data-[collapsible=icon]:hidden">
           <SidebarGroupLabel>Display</SidebarGroupLabel>
@@ -253,12 +316,14 @@ export default function LogSummarySidebar({
               />
               <div className="grid gap-0.5">
                 <span className="text-sm leading-none font-medium">Show minimap</span>
-                <span className="text-xs text-muted-foreground">Log levels across the file, click to jump</span>
+                <span className="text-xs text-muted-foreground">
+                  {minimapColor === "level" ? "Log levels" : `${colorOptions.find((o) => o.value === minimapColor)?.label ?? "Groups"}s`} across the file, click to jump
+                </span>
               </div>
             </label>
 
             {showMinimap && (
-              <div className="-mt-1 flex items-center gap-2 pl-6.5">
+              <div className="-mt-1 flex flex-wrap items-center gap-2 pl-6.5">
                 <div
                   role="radiogroup"
                   aria-label="Minimap axis"
@@ -287,6 +352,43 @@ export default function LogSummarySidebar({
                       {label}
                     </button>
                   ))}
+                </div>
+                {colorOptions.length > 1 && (
+                  <Segmented
+                    label="Minimap colour"
+                    options={colorOptions}
+                    value={minimapColor}
+                    onChange={setMinimapColor}
+                  />
+                )}
+              </div>
+            )}
+
+            {optionalColumns.length > 0 && (
+              <div className="grid gap-1.5">
+                <span className="text-sm leading-none font-medium">Columns</span>
+                <div className="flex flex-wrap gap-1">
+                  {optionalColumns.map((c) => {
+                    const on = !hiddenColumns.includes(c.name);
+                    return (
+                      <button
+                        key={c.name}
+                        type="button"
+                        aria-pressed={on}
+                        onClick={() =>
+                          setHiddenColumns(on ? [...hiddenColumns, c.name] : hiddenColumns.filter((n) => n !== c.name))
+                        }
+                        className={cn(
+                          "rounded-full border px-2 py-0.5 text-xs transition-colors",
+                          on
+                            ? "border-transparent bg-secondary text-foreground"
+                            : "text-muted-foreground line-through hover:text-foreground"
+                        )}
+                      >
+                        {c.label}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
             )}
@@ -347,7 +449,49 @@ export default function LogSummarySidebar({
         </SidebarMenu>
       </SidebarFooter>
       <BugReportDialog open={bugReportOpen} onOpenChange={setBugReportOpen} />
+      <FormatDialog
+        open={formatOpen}
+        onOpenChange={setFormatOpen}
+        baseUrl={baseUrl}
+        sessionId={sessionId}
+        format={format}
+        onApply={onChangeFormat}
+      />
       <SidebarRail />
     </Sidebar>
+  );
+}
+
+/** A small segmented radio group, like the minimap's axis switch */
+function Segmented({
+  label,
+  options,
+  value,
+  onChange,
+}: {
+  label: string;
+  options: { value: string; label: string; title: string }[];
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <div role="radiogroup" aria-label={label} title={label} className="inline-flex rounded-md border bg-background p-0.5 text-xs">
+      {options.map((o) => (
+        <button
+          key={o.value}
+          type="button"
+          role="radio"
+          aria-checked={value === o.value}
+          title={o.title}
+          onClick={() => onChange(o.value)}
+          className={cn(
+            "rounded-[5px] px-2.5 py-1 font-medium transition-colors",
+            value === o.value ? "bg-secondary text-foreground shadow-xs" : "text-muted-foreground hover:text-foreground"
+          )}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
   );
 }

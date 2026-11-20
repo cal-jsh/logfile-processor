@@ -10,12 +10,13 @@
 //! The pass over all lines is cached per session; the pass over a filter's matches reads
 //! only the matching lines and is cached with the filter result.
 //!
-//! Lines without a parseable timestamp (stack traces, other formats) are left out.
+//! Lines without a parseable timestamp (stack traces, formats without a time) are left out.
 //! Line numbers in this module are 0-based.
 
 use crate::logfile::index::LogFile;
 use crate::logfile::levels::{code, LevelIndex};
 use crate::logfile::view::{View, ViewLines};
+use crate::parsing::format::LogFormat;
 use rayon::prelude::*;
 use std::time::{Duration, Instant};
 
@@ -57,24 +58,19 @@ pub fn parse_timestamp(ts: &str) -> Option<i64> {
             scale /= 10;
         }
     }
-    // days from civil (Howard Hinnant)
+    let days = days_from_civil(y, mo, d);
+    Some(((days * 86_400 + h * 3600 + mi * 60 + s) * 1_000_000_000) + nanos)
+}
+
+/// Days since 1970-01-01 of a date (Howard Hinnant's `days_from_civil`).
+pub fn days_from_civil(y: i64, mo: i64, d: i64) -> i64 {
     let y = if mo <= 2 { y - 1 } else { y };
     let era = y.div_euclid(400);
     let yoe = y - era * 400;
     let mp = (mo + 9) % 12;
     let doy = (153 * mp + 2) / 5 + d - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146_097 + doe - 719_468;
-    Some(((days * 86_400 + h * 3600 + mi * 60 + s) * 1_000_000_000) + nanos)
-}
-
-/// The timestamp of a raw line in the `[ts] [LEVEL] [domain] message` format.
-pub fn line_timestamp(line: &[u8]) -> Option<i64> {
-    if line.first() != Some(&b'[') {
-        return None;
-    }
-    let end = memchr::memchr(b']', line)?;
-    parse_timestamp(std::str::from_utf8(&line[1..end]).ok()?)
+    era * 146_097 + doe - 719_468
 }
 
 /// Most severe level and first line per time slice.
@@ -117,7 +113,7 @@ impl TimeBins {
     }
 
     /// Bin every log line of the file.
-    pub fn build_all(file: &LogFile, levels: &LevelIndex) -> Self {
+    pub fn build_all(file: &LogFile, levels: &LevelIndex, format: &LogFormat) -> Self {
         let started = Instant::now();
         let Some(span) = levels.time_span() else {
             return Self::empty();
@@ -131,7 +127,7 @@ impl TimeBins {
                     if c == code::NONE {
                         continue;
                     }
-                    if let Some(ts) = line_timestamp(bytes) {
+                    if let Some(ts) = format.time_of(bytes) {
                         acc.add(span, line, ts, c);
                     }
                 }
@@ -144,7 +140,7 @@ impl TimeBins {
 
     /// Bin only the lines in `ranges` (sorted, disjoint half-open line ranges), reading
     /// just those lines.
-    pub fn build_ranges(file: &LogFile, levels: &LevelIndex, ranges: &[(u64, u64)]) -> Self {
+    pub fn build_ranges(file: &LogFile, levels: &LevelIndex, format: &LogFormat, ranges: &[(u64, u64)]) -> Self {
         let started = Instant::now();
         let Some(span) = levels.time_span() else {
             return Self::empty();
@@ -161,7 +157,7 @@ impl TimeBins {
                     if c == code::NONE {
                         continue;
                     }
-                    if let Some(ts) = line_timestamp(bytes) {
+                    if let Some(ts) = format.time_of(bytes) {
                         acc.add(span, line, ts, c);
                     }
                 }
@@ -206,9 +202,13 @@ mod tests {
         assert!(parse_timestamp("12:00:00").is_none());
     }
 
+    fn legacy() -> LogFormat {
+        LogFormat::compile(crate::parsing::format::LEGACY_PATTERN).unwrap()
+    }
+
     fn file(text: &str) -> (LogFile, LevelIndex) {
         let f = LogFile::from_test_bytes(text.as_bytes(), 64);
-        let l = LevelIndex::build(&f);
+        let l = LevelIndex::build(&f, &legacy());
         (f, l)
     }
 
@@ -223,7 +223,7 @@ mod tests {
              [2025-01-01 00:01:40] [WARN] [a] x\n",
         );
         assert_eq!(l.time_span().map(|(a, b)| (b - a) / 1_000_000_000), Some(100));
-        let bins = TimeBins::build_all(&f, &l);
+        let bins = TimeBins::build_all(&f, &l, &legacy());
         assert_eq!(bins.timed_lines, 4);
         let (lv, first) = bins.columns(100);
         assert_eq!(lv[0], code::ERROR);
@@ -235,7 +235,7 @@ mod tests {
         assert_eq!((lv[99], first[99]), (code::WARN, 4));
 
         // only line 3 and 4
-        let only = TimeBins::build_ranges(&f, &l, &[(3, 5)]);
+        let only = TimeBins::build_ranges(&f, &l, &legacy(), &[(3, 5)]);
         let (lv, first) = only.columns(100);
         assert_eq!((lv[0], lv[1], first[1], lv[99]), (code::NONE, code::INFO, 3, code::WARN));
     }
@@ -253,7 +253,7 @@ mod tests {
             lines.push(sec);
         }
         let (f, l) = file(&s);
-        let bins = TimeBins::build_all(&f, &l);
+        let bins = TimeBins::build_all(&f, &l, &legacy());
         let (lo, hi) = (*lines.iter().min().unwrap() as i128, *lines.iter().max().unwrap() as i128);
         let ns = 1_000_000_000i128;
         let mut want = vec![u64::MAX; FINE_BUCKETS];

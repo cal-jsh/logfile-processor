@@ -18,8 +18,8 @@ use crate::logfile::index::{display_text, LogFile};
 use crate::logfile::view::{MatchSet, View, ViewLines};
 use rayon::prelude::*;
 use crate::model::close_session_query::CloseSessionQuery;
+use crate::parsing::format::LogFormat;
 use crate::parsing::line_filter::LineFilter;
-use crate::parsing::parser::split_log_line;
 
 use axum::{
     extract::Query,
@@ -55,8 +55,8 @@ pub fn router() -> Router {
 #[derive(Deserialize, Debug)]
 pub struct ViewQuery {
     pub session_id: String,
-    /// Comma-separated log domains to include
-    pub domains: Option<String>,
+    /// Other fields to filter on, as JSON: `{"domain":["core"],"thread":["12"]}`
+    pub fields: Option<String>,
     /// Comma-separated log levels to include
     pub levels: Option<String>,
     /// Comma-separated keywords; a line matches if its message contains any of them
@@ -77,8 +77,9 @@ pub struct ViewQuery {
 }
 
 impl ViewQuery {
-    fn filter(&self) -> LineFilter {
-        LineFilter::from_csv(self.levels.as_deref(), self.domains.as_deref(), self.keywords.as_deref())
+    fn filter(&self) -> Result<LineFilter, ApiError> {
+        LineFilter::from_query(self.levels.as_deref(), self.fields.as_deref(), self.keywords.as_deref())
+            .map_err(|e| ApiError(StatusCode::BAD_REQUEST, e))
     }
 }
 
@@ -121,7 +122,7 @@ struct Resolved {
 
 async fn resolve(q: &ViewQuery) -> Result<Resolved, ApiError> {
     let session = session(&q.session_id)?;
-    let (matches, cached) = session.matches(q.filter()).await?;
+    let (matches, cached) = session.matches(q.filter()?).await?;
     let view = matches.view(q.context.unwrap_or(0));
     Ok(Resolved { session, matches, view, cached })
 }
@@ -216,9 +217,26 @@ pub struct Row {
     pub row: u64,
     pub line_number: u64,
     pub text: String,
+    /// The line's fields, in the order of the format's columns; `null` when the line
+    /// does not have the format (stack traces, banners, ...)
+    pub fields: Option<Vec<String>>,
+    /// Timestamp in ms since 1970 in the log's own clock, if the line has one
+    pub t: Option<f64>,
     /// Shown only as context around a match
     pub context: bool,
     pub truncated: bool,
+}
+
+/// Fields and time of a line, for display.
+pub fn split_for_display(format: &LogFormat, text: &str) -> (Option<Vec<String>>, Option<f64>) {
+    match format.parse(text) {
+        None => (None, None),
+        Some(p) => {
+            let fields = (0..format.fields().len()).map(|i| p.get(text, i).to_string()).collect();
+            let t = format.time_ns(text, &p).map(|ns| ns as f64 / 1e6);
+            (Some(fields), t)
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -227,11 +245,12 @@ pub struct RowsResponse {
     pub rows: Vec<Row>,
 }
 
-fn read_rows(file: &LogFile, matches: &MatchSet, view: &View, first: u64, count: u64) -> Vec<Row> {
+fn read_rows(file: &LogFile, format: &LogFormat, matches: &MatchSet, view: &View, first: u64, count: u64) -> Vec<Row> {
     ViewLines::new(file, view, first, count)
         .map(|(row, l, bytes)| {
             let (text, truncated) = display_text(bytes, MAX_DISPLAY_BYTES);
-            Row { row, line_number: l + 1, text, context: !matches.is_match(l), truncated }
+            let (fields, t) = split_for_display(format, &text);
+            Row { row, line_number: l + 1, text, fields, t, context: !matches.is_match(l), truncated }
         })
         .collect()
 }
@@ -242,7 +261,7 @@ pub async fn get_view_rows(Query(q): Query<ViewQuery>) -> Result<Json<RowsRespon
     let first = q.first_row.unwrap_or(0);
     let count = q.count.unwrap_or(100).min(MAX_ROWS_PER_REQUEST);
     let row_count = r.view.row_count();
-    let rows = blocking(move || read_rows(&r.session.file, &r.matches, &r.view, first, count)).await?;
+    let rows = blocking(move || read_rows(&r.session.file, &r.session.format, &r.matches, &r.view, first, count)).await?;
     Ok(Json(RowsResponse { row_count, rows }))
 }
 
@@ -292,6 +311,8 @@ pub struct SearchHit {
     pub row: u64,
     pub line_number: u64,
     pub text: String,
+    /// As in [`Row::fields`]
+    pub fields: Option<Vec<String>>,
 }
 
 #[derive(Serialize)]
@@ -337,7 +358,8 @@ pub async fn search_view(Query(q): Query<ViewQuery>) -> Result<Json<SearchRespon
                     for (rw, l, bytes) in ViewLines::new(&r.session.file, &r.view, b, n) {
                         if re.is_match(bytes) {
                             let (text, _) = display_text(bytes, MAX_DISPLAY_BYTES);
-                            out.push(SearchHit { row: rw, line_number: l + 1, text });
+                            let fields = split_for_display(&r.session.format, &text).0;
+                            out.push(SearchHit { row: rw, line_number: l + 1, text, fields });
                             if out.len() >= limit {
                                 break;
                             }
@@ -396,28 +418,40 @@ fn today() -> String {
 }
 
 /// Write every row of the view as text (original lines) or CSV to `out`.
+///
+/// CSV columns: `Line`, one per field of the format except the message, `Matched`,
+/// `Context`, then `Message`: the whole line, as before (stack traces and other lines
+/// without the format have empty field columns).
 pub fn write_view(
     file: &LogFile,
+    format: &LogFormat,
     matches: &MatchSet,
     view: &View,
     csv: bool,
     out: &mut impl std::io::Write,
 ) -> std::io::Result<()> {
     let mut buf: Vec<u8> = Vec::with_capacity(MAX_DISPLAY_BYTES);
+    let columns: Vec<usize> =
+        (0..format.fields().len()).filter(|&i| Some(i) != format.message_field()).collect();
     if csv {
-        out.write_all(b"Line,Timestamp,Level,Domain,Matched,Context,Message
-")?;
+        buf.extend_from_slice(b"Line");
+        for &i in &columns {
+            buf.push(b',');
+            csv_field(&mut buf, &format.fields()[i].label);
+        }
+        buf.extend_from_slice(b",Matched,Context,Message\n");
+        out.write_all(&buf)?;
     }
     for (_, l, bytes) in ViewLines::new(file, view, 0, view.row_count()) {
         let is_match = matches.is_match(l);
         if csv {
             buf.clear();
             let text = String::from_utf8_lossy(bytes);
-            let f = split_log_line(&text);
+            let parsed = format.parse(&text);
             buf.extend_from_slice((l + 1).to_string().as_bytes());
-            for field in [f.map(|f| f.ts), f.map(|f| f.level), f.map(|f| f.domain)] {
+            for &i in &columns {
                 buf.push(b',');
-                csv_field(&mut buf, field.unwrap_or(""));
+                csv_field(&mut buf, parsed.as_ref().map_or("", |p| p.get(&text, i)));
             }
             buf.extend_from_slice(if is_match { b",true,false," } else { b",false,true," });
             csv_field(&mut buf, &text);
@@ -435,7 +469,7 @@ pub fn write_view(
 pub async fn export_view_to_file(
     session_id: &str,
     levels: Option<&str>,
-    domains: Option<&str>,
+    fields: Option<&str>,
     keywords: Option<&str>,
     context: u64,
     csv: bool,
@@ -443,7 +477,7 @@ pub async fn export_view_to_file(
 ) -> Result<u64, String> {
     let session = get_user_log(session_id).ok_or("Session ID not found")?;
     let (matches, _) = session
-        .matches(LineFilter::from_csv(levels, domains, keywords))
+        .matches(LineFilter::from_query(levels, fields, keywords)?)
         .await
         .map_err(|e| match e {
             QueryError::Cancelled => "Cancelled by a newer filter".to_string(),
@@ -454,7 +488,7 @@ pub async fn export_view_to_file(
     tokio::task::spawn_blocking(move || {
         let f = std::fs::File::create(&path)?;
         let mut out = std::io::BufWriter::with_capacity(1024 * 1024, f);
-        write_view(&session.file, &matches, &view, csv, &mut out)
+        write_view(&session.file, &session.format, &matches, &view, csv, &mut out)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -487,6 +521,29 @@ mod tests {
         let mut b = Vec::new();
         csv_field(&mut b, "plain");
         assert_eq!(b, b"plain");
+    }
+
+    #[test]
+    fn csv_export_has_a_column_per_field() {
+        use crate::logfile::scan::{scan_matches, CompiledFilter};
+        use crate::parsing::format::LogFormat;
+        use std::sync::atomic::AtomicBool;
+        use std::sync::Arc;
+        let text = "[2026-11-20 10:00:00.001] [7] [info] a, b\n    at frame\n[2026-11-20 10:00:00.002] [8] [error] boom\n";
+        let file = LogFile::from_test_bytes(text.as_bytes(), 64);
+        let fmt = Arc::new(LogFormat::compile("[%Y-%m-%d %H:%M:%S.%e] [%t] [%l] %v").unwrap());
+        let filter = LineFilter::from_query(None, Some(r#"{"thread":["8"]}"#), None).unwrap();
+        let m = scan_matches(&file, &CompiledFilter::new(filter, fmt.clone()), &AtomicBool::new(false))
+            .unwrap_or_else(|_| panic!("cancelled"));
+        let v = m.view(1);
+        let mut out = Vec::new();
+        write_view(&file, &fmt, &m, &v, true, &mut out).unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "Line,Time,Thread,Level,Matched,Context,Message\n\
+             2,,,,false,true,    at frame\n\
+             3,2026-11-20 10:00:00.002,8,error,true,false,[2026-11-20 10:00:00.002] [8] [error] boom\n"
+        );
     }
 
     #[test]

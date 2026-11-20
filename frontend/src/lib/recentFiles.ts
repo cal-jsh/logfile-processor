@@ -49,6 +49,40 @@ export function clearRecent(): RecentFile[] {
     return save([]);
 }
 
+/* Line formats the user set for particular files (spdlog patterns), kept next to the
+   recent list but separately, so a file keeps its format after it drops off the list. */
+const PATTERNS_KEY = "logviewer.filePatterns";
+const MAX_PATTERNS = 200;
+
+type PatternEntry = { path: string; pattern: string; at: number };
+
+function loadPatterns(): PatternEntry[] {
+    try {
+        const list = JSON.parse(localStorage.getItem(PATTERNS_KEY) ?? "[]");
+        return Array.isArray(list)
+            ? list.filter((e): e is PatternEntry => typeof e?.path === "string" && typeof e?.pattern === "string")
+            : [];
+    } catch {
+        return [];
+    }
+}
+
+/** The pattern set for this file, or null to detect its format. */
+export function getFilePattern(path: string): string | null {
+    return loadPatterns().find((e) => samePath(e.path, path))?.pattern ?? null;
+}
+
+/** Remember a pattern for this file; null forgets it (back to detection). */
+export function setFilePattern(path: string, pattern: string | null) {
+    const rest = loadPatterns().filter((e) => !samePath(e.path, path));
+    const list = pattern ? [{ path, pattern, at: Date.now() }, ...rest] : rest;
+    try {
+        localStorage.setItem(PATTERNS_KEY, JSON.stringify(list.slice(0, MAX_PATTERNS)));
+    } catch {
+        // storage unavailable: the pattern applies to this session only
+    }
+}
+
 /** Which of the paths are files right now (false for deleted, moved or unreachable ones). */
 export function filesExist(paths: string[]): Promise<boolean[]> {
     return invoke<boolean[]>("files_exist", { paths });

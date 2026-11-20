@@ -1,11 +1,13 @@
 //! Open log sessions: the memory-mapped, indexed file plus a small cache of filter
 //! results, so scrolling, changing the context and exporting never rescan the file.
 
+use crate::logfile::categories::{CategoryIndex, CategoryTimeBins};
 use crate::logfile::index::LogFile;
 use crate::logfile::levels::LevelIndex;
 use crate::logfile::timeline::TimeBins;
 use crate::logfile::scan::{scan_matches, Cancelled, CompiledFilter};
 use crate::logfile::view::MatchSet;
+use crate::parsing::format::LogFormat;
 use crate::parsing::line_filter::LineFilter;
 // tracing
 use tracing::info;
@@ -25,12 +27,20 @@ type MatchCell = Arc<tokio::sync::OnceCell<Arc<MatchSet>>>;
 pub struct Session {
     pub path: PathBuf,
     pub file: Arc<LogFile>,
+    /// How lines are split into fields
+    pub format: Arc<LogFormat>,
     queries: Mutex<QueryCache>,
     /// Per-line log levels for the minimap, built on first use.
     levels: tokio::sync::OnceCell<Arc<LevelIndex>>,
     /// All log lines binned by time (minimap "by time"), built on first use.
     time_bins: tokio::sync::OnceCell<Arc<TimeBins>>,
+    /// Per-line categories of a field (minimap colouring), per field name, built on first use.
+    categories: Mutex<HashMap<String, CategoryCell>>,
+    /// Those categories binned by time, per field name, built on first use.
+    category_time_bins: Mutex<HashMap<String, Arc<tokio::sync::OnceCell<Arc<CategoryTimeBins>>>>>,
 }
+
+type CategoryCell = Arc<tokio::sync::OnceCell<Arc<CategoryIndex>>>;
 
 #[derive(Default)]
 struct QueryCache {
@@ -47,8 +57,8 @@ pub enum QueryError {
 }
 
 impl Session {
-    pub fn new(path: PathBuf, file: LogFile) -> Self {
-        Self { path, file: Arc::new(file), queries: Mutex::new(QueryCache::default()), levels: Default::default(), time_bins: Default::default() }
+    pub fn new(path: PathBuf, file: Arc<LogFile>, format: Arc<LogFormat>) -> Self {
+        Self { path, file, format, queries: Mutex::new(QueryCache::default()), levels: Default::default(), time_bins: Default::default(), categories: Default::default(), category_time_bins: Default::default() }
     }
 
     /// The lines matching `filter`, from the cache or by scanning the file.
@@ -82,10 +92,11 @@ impl Session {
         // Run the scan in a detached task, so the result is cached even if the client
         // that asked for it disconnects; later requests wait on the same cell.
         let file = self.file.clone();
+        let format = self.format.clone();
         let cancel = self.start_scan(&key);
         let task = tokio::spawn(async move {
             cell.get_or_try_init(|| async move {
-                let compiled = CompiledFilter::new(filter);
+                let compiled = CompiledFilter::new(filter, format);
                 let res = tokio::task::spawn_blocking(move || {
                     scan_matches(&file, &compiled, &cancel)
                 })
@@ -116,10 +127,11 @@ impl Session {
             return Ok((l.clone(), true));
         }
         let file = self.file.clone();
+        let format = self.format.clone();
         let l = self
             .levels
             .get_or_try_init(|| async move {
-                let idx = tokio::task::spawn_blocking(move || LevelIndex::build(&file))
+                let idx = tokio::task::spawn_blocking(move || LevelIndex::build(&file, &format))
                     .await
                     .map_err(|e| QueryError::Internal(e.to_string()))?;
                 info!(
@@ -136,13 +148,63 @@ impl Session {
     /// All log lines binned by time, built (once, in parallel) on first use.
     pub async fn time_bins(&self, levels: Arc<LevelIndex>) -> Result<Arc<TimeBins>, QueryError> {
         let file = self.file.clone();
+        let format = self.format.clone();
         let bins = self
             .time_bins
             .get_or_try_init(|| async move {
-                let bins = tokio::task::spawn_blocking(move || TimeBins::build_all(&file, &levels))
+                let bins = tokio::task::spawn_blocking(move || TimeBins::build_all(&file, &levels, &format))
                     .await
                     .map_err(|e| QueryError::Internal(e.to_string()))?;
                 info!("Time bins of {} lines built in {} ms", bins.timed_lines, bins.build_time.as_millis());
+                Ok::<_, QueryError>(Arc::new(bins))
+            })
+            .await?;
+        Ok(bins.clone())
+    }
+
+    /// The categories of field `name` (format field number `field`) per line, built (once,
+    /// in parallel) on first use. Returns the index and whether it was already built.
+    pub async fn categories(&self, name: &str, field: usize) -> Result<(Arc<CategoryIndex>, bool), QueryError> {
+        let cell = self.categories.lock().unwrap().entry(name.to_string()).or_default().clone();
+        if let Some(c) = cell.get() {
+            return Ok((c.clone(), true));
+        }
+        let file = self.file.clone();
+        let format = self.format.clone();
+        let c = cell
+            .get_or_try_init(|| async move {
+                let idx = tokio::task::spawn_blocking(move || CategoryIndex::build(&file, &format, field))
+                    .await
+                    .map_err(|e| QueryError::Internal(e.to_string()))?;
+                info!(
+                    "Category index of {} lines ({} top groups, {} others) built in {} ms",
+                    idx.line_count(),
+                    idx.top.len(),
+                    idx.other_groups,
+                    idx.build_time.as_millis()
+                );
+                Ok::<_, QueryError>(Arc::new(idx))
+            })
+            .await?;
+        Ok((c.clone(), false))
+    }
+
+    /// The categories of field `name` binned by time, built (once, in parallel) on first use.
+    pub async fn category_time_bins(
+        &self,
+        name: &str,
+        levels: Arc<LevelIndex>,
+        cats: Arc<CategoryIndex>,
+    ) -> Result<Arc<CategoryTimeBins>, QueryError> {
+        let cell = self.category_time_bins.lock().unwrap().entry(name.to_string()).or_default().clone();
+        let file = self.file.clone();
+        let format = self.format.clone();
+        let bins = cell
+            .get_or_try_init(|| async move {
+                let bins = tokio::task::spawn_blocking(move || CategoryTimeBins::build_all(&file, &levels, &cats, &format))
+                    .await
+                    .map_err(|e| QueryError::Internal(e.to_string()))?;
+                info!("Category time bins built in {} ms", bins.build_time.as_millis());
                 Ok::<_, QueryError>(Arc::new(bins))
             })
             .await?;
@@ -165,7 +227,7 @@ impl Session {
 }
 
 fn cache_key(f: &LineFilter) -> String {
-    format!("{:?}|{:?}|{:?}", f.levels, f.domains, f.keywords)
+    format!("{:?}|{:?}|{:?}", f.levels, f.fields, f.keywords)
 }
 
 static LOG_STORAGE: Lazy<Mutex<HashMap<String, Arc<Session>>>> =

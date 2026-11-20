@@ -6,9 +6,18 @@ import {
     initialFile,
     openLogDialog,
     openLogPath,
+    reformatLog,
     type OpenedLog,
 } from "./lib/platform";
-import { addRecent, clearRecent, filesExist, loadRecent, removeRecent, type RecentFile } from "./lib/recentFiles";
+import {
+    addRecent,
+    clearRecent,
+    filesExist,
+    loadRecent,
+    removeRecent,
+    setFilePattern,
+    type RecentFile,
+} from "./lib/recentFiles";
 import { RecentFiles } from "./components/RecentFiles";
 
 // shadcn/ui components
@@ -135,6 +144,15 @@ export default function App() {
             }
         });
 
+    /** Read the open file again with another line format (null: detect it), and
+        remember the choice for this file. Throws if the pattern is invalid. */
+    const changeFormat = async (pattern: string | null) => {
+        if (!sessionId || !filePath) return;
+        const opened = await reformatLog(sessionId, filePath, pattern);
+        setFilePattern(filePath, pattern);
+        showOpened(opened);
+    };
+
     /** Close the current file and go back to the start page. */
     const closeFile = () => {
         if (baseUrl && sessionId) {
@@ -157,6 +175,7 @@ export default function App() {
                 summary={summary}
                 fileName={filePath ?? undefined}
                 onClose={closeFile}
+                onChangeFormat={changeFormat}
             />
         );
     }

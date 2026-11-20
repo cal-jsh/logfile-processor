@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
-import { colorMap } from "../lib/colorMap";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { colorMap, groupColors, OTHER_GROUP_COLOR } from "../lib/colorMap";
 
 /*
  * Horizontal minimap of the whole file: one vertical line per pixel column, colored by
@@ -13,6 +13,11 @@ import { colorMap } from "../lib/colorMap";
  * Axis "line": every column covers the same number of lines.
  * Axis "time": every column covers the same slice of the file's time span, so quiet
  * periods show as gaps and bursts as dense bands. A time scale is drawn above it.
+ *
+ * Colour "level": the most severe level per column. Colour by a field (e.g. "domain"):
+ * the field's group (value up to the first dot) with the most lines per column; the
+ * backend gives the 12 largest groups a code each and folds the rest into "other". A
+ * legend below the bar names the colours.
  */
 
 export type MinimapAxis = "line" | "time";
@@ -34,8 +39,17 @@ const CODE_COLOR: (string | null)[] = [
   colorMap.ERROR,
 ];
 
+type Group = { name: string; lines: number };
+
 type MinimapData = {
   axis: MinimapAxis;
+  /** "level" or the field the codes stand for */
+  color: string;
+  /** colour by field: code i + 1 is categories[i] */
+  categories: Group[] | null;
+  other_code: number | null;
+  other_lines: number | null;
+  other_groups: number | null;
   line_count: number;
   buckets: number;
   all: number[];
@@ -99,7 +113,7 @@ function timeTicks(start: number, end: number, width: number): { t: number; labe
 }
 
 /** Fill each run of equal codes as one rectangle */
-function paint(ctx: CanvasRenderingContext2D, codes: number[], width: number, height: number, alpha: number) {
+function paint(ctx: CanvasRenderingContext2D, codes: number[], colors: (string | null)[], width: number, height: number, alpha: number) {
   const n = codes.length;
   if (!n) return;
   ctx.globalAlpha = alpha;
@@ -108,7 +122,7 @@ function paint(ctx: CanvasRenderingContext2D, codes: number[], width: number, he
     const c = codes[i];
     let j = i + 1;
     while (j < n && codes[j] === c) j++;
-    const color = CODE_COLOR[c];
+    const color = colors[c];
     if (color) {
       const x0 = Math.round((i * width) / n);
       const x1 = Math.round((j * width) / n);
@@ -120,13 +134,28 @@ function paint(ctx: CanvasRenderingContext2D, codes: number[], width: number, he
   ctx.globalAlpha = 1;
 }
 
-type Hover = { x: number; line: number | null; time: number | null; level: string | null };
+/** Names and colours of the codes of a response: index = code */
+type Legend = { names: (string | null)[]; colors: (string | null)[] };
+
+function legendOf(d: MinimapData): Legend {
+  if (d.color === "level" || !d.categories) return { names: [...CODE_LEVEL], colors: CODE_COLOR };
+  const names: (string | null)[] = [null, ...d.categories.map((g) => g.name)];
+  const colors: (string | null)[] = [null, ...groupColors(d.categories.map((g) => g.name))];
+  if (d.other_code != null) {
+    names[d.other_code] = "other";
+    colors[d.other_code] = OTHER_GROUP_COLOR;
+  }
+  return { names, colors };
+}
+
+type Hover = { x: number; line: number | null; time: number | null; label: string | null; labelColor?: string };
 
 export function Minimap({
   baseUrl,
   sessionId,
   filterParams,
   axis,
+  color,
   visible,
   onJumpToLine,
 }: {
@@ -135,6 +164,8 @@ export function Minimap({
   /** Encoded filter query parameters, e.g. "&levels=ERROR&keywords=foo" */
   filterParams: string;
   axis: MinimapAxis;
+  /** "level", or the name of a text field to colour by (e.g. "domain") */
+  color: string;
   visible: VisibleRange | null;
   onJumpToLine: (line: number) => void;
 }) {
@@ -147,7 +178,8 @@ export function Minimap({
   const [hover, setHover] = useState<Hover | null>(null);
 
   // data of the other axis is never drawn (it arrives a moment after a switch)
-  const data = fetched && fetched.axis === axis ? fetched : null;
+  const data = fetched && fetched.axis === axis && fetched.color === color ? fetched : null;
+  const legend = useMemo(() => (data ? legendOf(data) : null), [data]);
   const timeAxis = data?.axis === "time" && data.time_start_ms != null && data.time_end_ms != null;
   const t0 = data?.time_start_ms ?? 0;
   const t1 = data?.time_end_ms ?? 0;
@@ -178,7 +210,7 @@ export function Minimap({
     const ctrl = new AbortController();
     setLoading(true);
     fetch(
-      `${baseUrl}/minimap?session_id=${encodeURIComponent(sessionId)}${filterParams}&buckets=${pxWidth}&axis=${axis}`,
+      `${baseUrl}/minimap?session_id=${encodeURIComponent(sessionId)}${filterParams}&buckets=${pxWidth}&axis=${axis}&color=${encodeURIComponent(color)}`,
       { signal: ctrl.signal }
     )
       .then((r) => {
@@ -193,7 +225,7 @@ export function Minimap({
         if (e?.name !== "AbortError") setLoading(false);
       });
     return () => ctrl.abort();
-  }, [baseUrl, sessionId, filterParams, pxWidth, axis]);
+  }, [baseUrl, sessionId, filterParams, pxWidth, axis, color]);
 
   /* draw */
   useEffect(() => {
@@ -207,14 +239,14 @@ export function Minimap({
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
     ctx.clearRect(0, 0, w, h);
-    if (!data) return;
+    if (!data || !legend) return;
     if (data.matched) {
-      paint(ctx, data.all, w, h, 0.16);
-      paint(ctx, data.matched, w, h, 1);
+      paint(ctx, data.all, legend.colors, w, h, 0.16);
+      paint(ctx, data.matched, legend.colors, w, h, 1);
     } else {
-      paint(ctx, data.all, w, h, 1);
+      paint(ctx, data.all, legend.colors, w, h, 1);
     }
-  }, [data, cssWidth]);
+  }, [data, legend, cssWidth]);
 
   /* pointer: hover readout, click and drag to jump */
   const lineCount = data?.line_count ?? 0;
@@ -227,10 +259,12 @@ export function Minimap({
     const x = clientX - rect.left;
     const f = Math.min(Math.max(x / rect.width, 0), 0.999999);
     const codes = data ? data.matched ?? data.all : [];
-    const level = CODE_LEVEL[codes[columnAt(f)] ?? 0];
+    const code = codes[columnAt(f)] ?? 0;
+    const label = legend?.names[code] ?? null;
+    const labelColor = legend?.colors[code] ?? undefined;
     if (!timeAxis || !data?.first_lines) {
       const line = Math.floor(f * lineCount) + 1;
-      return { x, line, time: null, level, jump: line };
+      return { x, line, time: null, label, labelColor, jump: line };
     }
     const fl = data.first_lines;
     const c = columnAt(f);
@@ -239,7 +273,7 @@ export function Minimap({
       if (c + d < fl.length && fl[c + d] > 0) jump = fl[c + d];
       else if (c - d >= 0 && fl[c - d] > 0) jump = fl[c - d];
     }
-    return { x, line: fl[c] > 0 ? fl[c] : null, time: t0 + f * (t1 - t0), level, jump };
+    return { x, line: fl[c] > 0 ? fl[c] : null, time: t0 + f * (t1 - t0), label, labelColor, jump };
   };
   const dragging = useRef(false);
 
@@ -282,7 +316,6 @@ export function Minimap({
   }
 
   const ticks = timeAxis ? timeTicks(t0, t1, cssWidth) : [];
-  const hoverColor = hover?.level ? CODE_COLOR[CODE_LEVEL.indexOf(hover.level as never)] ?? undefined : undefined;
 
   return (
     <div className="shrink-0 select-none border-b border-white/10" style={{ background: "#252526" }}>
@@ -318,7 +351,7 @@ export function Minimap({
         onPointerCancel={onPointerUp}
         onPointerLeave={() => setHover(null)}
         role="slider"
-        aria-label={`Minimap by ${axis}: log levels across the file, click to jump`}
+        aria-label={`Minimap by ${axis}: ${color === "level" ? "log levels" : color} across the file, click to jump`}
         aria-valuemin={1}
         aria-valuemax={lineCount || 1}
         aria-valuenow={visible?.first ?? 1}
@@ -341,9 +374,9 @@ export function Minimap({
             >
               {hover.time != null && <span className="mr-1.5 text-white/75">{formatFull(hover.time)}</span>}
               {hover.line != null ? `Line ${hover.line.toLocaleString()}` : "No log lines"}
-              {hover.line != null && hover.level && (
-                <span className="ml-1.5 font-semibold" style={{ color: hoverColor }}>
-                  {hover.level}
+              {hover.line != null && hover.label && (
+                <span className="ml-1.5 font-semibold" style={{ color: hover.labelColor }}>
+                  {hover.label}
                 </span>
               )}
             </div>
@@ -356,6 +389,46 @@ export function Minimap({
           </div>
         )}
       </div>
+
+      {data?.categories && legend && (
+        <MinimapLegend data={data} legend={legend} highlight={hover?.line != null ? hover.label : null} />
+      )}
+    </div>
+  );
+}
+
+/** One line of colour swatches with the group names, most lines first */
+function MinimapLegend({ data, legend, highlight }: { data: MinimapData; legend: Legend; highlight: string | null }) {
+  const groups = data.categories ?? [];
+  const total = groups.reduce((a, g) => a + g.lines, 0) + (data.other_lines ?? 0);
+  const pct = (n: number) => (total ? `${((100 * n) / total).toFixed(n * 100 < total ? 2 : 1)}%` : "");
+  const items = groups.map((g, i) => ({
+    key: g.name,
+    name: g.name,
+    color: legend.colors[i + 1] ?? OTHER_GROUP_COLOR,
+    title: `${g.name}: ${g.lines.toLocaleString()} lines (${pct(g.lines)})`,
+  }));
+  if (data.other_lines && data.other_code != null) {
+    const n = data.other_groups ?? 0;
+    items.push({
+      key: "other",
+      name: `other (${n.toLocaleString()})`,
+      color: OTHER_GROUP_COLOR,
+      title: `${n.toLocaleString()} smaller groups together: ${data.other_lines.toLocaleString()} lines (${pct(data.other_lines)})`,
+    });
+  }
+  return (
+    <div
+      className="flex h-[18px] items-center gap-3 overflow-hidden whitespace-nowrap border-t border-white/5 px-2 font-mono text-[10px] text-white/65"
+      aria-label="Minimap colours"
+    >
+      {items.map((it) => (
+        <span key={it.key} title={it.title} className={highlight === it.key ? "flex items-center gap-1 text-white" : "flex items-center gap-1"}>
+          <span className="inline-block size-2 shrink-0 rounded-[2px]" style={{ background: it.color }} />
+          {it.name}
+        </span>
+      ))}
+      {!items.length && <span>No values in this file</span>}
     </div>
   );
 }

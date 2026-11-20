@@ -13,8 +13,7 @@
 //! Line numbers in this module are 0-based.
 
 use crate::logfile::index::LogFile;
-use crate::logfile::timeline::line_timestamp;
-use crate::parsing::parser::split_log_line;
+use crate::parsing::format::LogFormat;
 use rayon::prelude::*;
 use std::time::{Duration, Instant};
 
@@ -23,7 +22,7 @@ pub const BLOCK: u64 = 64;
 
 /// Severity codes, ordered so that a larger code is more severe.
 pub mod code {
-    /// Not a `[ts] [LEVEL] [domain] message` line (stack traces, banners, ...)
+    /// Not a line in the log format (stack traces, banners, ...)
     pub const NONE: u8 = 0;
     /// A log line with a level that is not one of the known ones
     pub const OTHER: u8 = 1;
@@ -34,32 +33,24 @@ pub mod code {
     pub const ERROR: u8 = 6;
 }
 
-/// Severity code of a level name. Common aliases map to the five known levels.
+/// Severity code of a level name. Common aliases (and spdlog's one-letter `%L` names)
+/// map to the five known levels.
 pub fn level_code(level: &str) -> u8 {
     let l = level.trim();
     let is = |s: &str| l.eq_ignore_ascii_case(s);
-    if is("ERROR") || is("ERR") || is("FATAL") || is("CRITICAL") || is("CRIT") || is("SEVERE") {
+    if is("ERROR") || is("ERR") || is("FATAL") || is("CRITICAL") || is("CRIT") || is("SEVERE") || is("E") || is("C") || is("F") {
         code::ERROR
-    } else if is("WARN") || is("WARNING") {
+    } else if is("WARN") || is("WARNING") || is("W") {
         code::WARN
-    } else if is("INFO") || is("NOTICE") {
+    } else if is("INFO") || is("NOTICE") || is("I") {
         code::INFO
-    } else if is("DEBUG") || is("DBG") {
+    } else if is("DEBUG") || is("DBG") || is("D") {
         code::DEBUG
-    } else if is("TRACE") || is("VERBOSE") {
+    } else if is("TRACE") || is("VERBOSE") || is("T") || is("V") {
         code::TRACE
     } else {
         code::OTHER
     }
-}
-
-fn line_code(bytes: &[u8]) -> u8 {
-    // the same field split as the summary and the filter
-    let fields = match std::str::from_utf8(bytes) {
-        Ok(s) => split_log_line(s).map(|f| level_code(f.level)),
-        Err(_) => split_log_line(&String::from_utf8_lossy(bytes)).map(|f| level_code(f.level)),
-    };
-    fields.unwrap_or(code::NONE)
 }
 
 pub struct LevelIndex {
@@ -75,7 +66,7 @@ pub struct LevelIndex {
 }
 
 impl LevelIndex {
-    pub fn build(file: &LogFile) -> Self {
+    pub fn build(file: &LogFile, format: &LogFormat) -> Self {
         let started = Instant::now();
         let line_count = file.line_count();
 
@@ -91,11 +82,10 @@ impl LevelIndex {
                 let mut line = first;
                 let mut span: Option<(i64, i64)> = None;
                 for (_, bytes) in file.chunk_lines(chunk) {
-                    let c = line_code(bytes);
-                    if c != code::NONE {
-                        if let Some(ts) = line_timestamp(bytes) {
-                            span = Some(span.map_or((ts, ts), |(a, b)| (a.min(ts), b.max(ts))));
-                        }
+                    // the same field split as the summary and the filter
+                    let (c, ts) = format.code_and_time(bytes);
+                    if let Some(ts) = ts {
+                        span = Some(span.map_or((ts, ts), |(a, b)| (a.min(ts), b.max(ts))));
                     }
                     if line % 2 == 0 {
                         byte = c;
@@ -235,6 +225,10 @@ mod tests {
     }
 
     /// A file whose line `i` has code `codes[i]`.
+    fn legacy() -> LogFormat {
+        LogFormat::compile(crate::parsing::format::LEGACY_PATTERN).unwrap()
+    }
+
     fn file_of(codes: &[u8], chunk_size: usize) -> LogFile {
         let mut s = String::new();
         for (i, &c) in codes.iter().enumerate() {
@@ -264,6 +258,8 @@ mod tests {
         assert_eq!(level_code("warning"), code::WARN);
         assert_eq!(level_code("Info"), code::INFO);
         assert_eq!(level_code("FOO"), code::OTHER);
+        assert_eq!(level_code("W"), code::WARN);
+        assert_eq!(level_code("critical"), code::ERROR);
     }
 
     #[test]
@@ -282,7 +278,7 @@ mod tests {
             }
             let chunk_size = [37, 500, 4096, 1 << 20][case % 4];
             let file = file_of(&codes, chunk_size);
-            let idx = LevelIndex::build(&file);
+            let idx = LevelIndex::build(&file, &legacy());
             assert_eq!(idx.line_count(), len as u64);
             for (l, &c) in codes.iter().enumerate() {
                 assert_eq!(idx.code(l as u64), c, "case {case} line {l}");
@@ -317,7 +313,7 @@ mod tests {
         let mut codes = vec![code::INFO; 1000];
         codes[130] = code::ERROR; // inside block 2
         codes[63] = code::WARN; // last line of block 0
-        let idx = LevelIndex::build(&file_of(&codes, 100));
+        let idx = LevelIndex::build(&file_of(&codes, 100), &legacy());
         assert_eq!(idx.max_in(0, 63), code::INFO);
         assert_eq!(idx.max_in(0, 64), code::WARN);
         assert_eq!(idx.max_in(64, 1000), code::ERROR);

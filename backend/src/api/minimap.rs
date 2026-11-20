@@ -1,7 +1,7 @@
 //! Minimap API: the log levels of the whole file, aggregated to one value per pixel
 //! column, so the browser never receives per-line data.
 //!
-//! `GET /minimap?session_id=..&buckets=N[&levels=..&domains=..&keywords=..]` splits the
+//! `GET /minimap?session_id=..&buckets=N[&levels=..&fields=..&keywords=..]` splits the
 //! file's lines into `N` equal buckets and returns the most severe level code in each
 //! (see [`crate::logfile::levels::code`]): `0` no log line, `1` other level, `2` TRACE,
 //! `3` DEBUG, `4` INFO, `5` WARN, `6` ERROR. Taking the most severe level keeps a single
@@ -16,10 +16,17 @@
 //! equal runs of lines, so quiet periods show as empty columns and bursts as dense ones
 //! (see [`crate::logfile::timeline`]). `first_lines` then gives the first line of each
 //! column, for jumping, and `time_start_ms` / `time_end_ms` the span, for an axis.
+//!
+//! With `color=<field>` (e.g. `color=domain`), the buckets hold the field's group with the
+//! most lines instead of the most severe level (see [`crate::logfile::categories`]):
+//! `0` no value, `1..=categories.len()` the groups in `categories`, `other_code` all
+//! other groups. Values are grouped by their first `.`-separated segment.
 
 use crate::api::view::ApiError;
 use crate::log_storage::get_user_log;
+use crate::logfile::categories::{self, CategoryTimeBins, Group};
 use crate::logfile::timeline::TimeBins;
+use crate::parsing::format::FieldKind;
 use std::sync::Arc;
 use crate::parsing::line_filter::LineFilter;
 use axum::{extract::Query, http::StatusCode, routing::get, Json, Router};
@@ -41,12 +48,14 @@ pub struct MinimapQuery {
     pub buckets: Option<u64>,
     /// Comma-separated log levels to include
     pub levels: Option<String>,
-    /// Comma-separated log domains to include
-    pub domains: Option<String>,
+    /// Other fields to filter on, as JSON (see `ViewQuery::fields`)
+    pub fields: Option<String>,
     /// Comma-separated keywords; a line matches if its message contains any of them
     pub keywords: Option<String>,
     /// `line` (default): equal numbers of lines per bucket; `time`: equal time slices
     pub axis: Option<String>,
+    /// `level` (default), or the name of a text field (e.g. `domain`) to colour by
+    pub color: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -73,7 +82,16 @@ pub struct MinimapResponse {
     pub time_end_ms: Option<f64>,
     /// Time axis only: log lines with a parseable timestamp (the others are left out)
     pub timed_lines: Option<u64>,
-    /// Time to build the level index, when this request built it
+    /// `level`, or the field the buckets are coloured by
+    pub color: String,
+    /// Colour by field only: the groups with a code of their own (code `i + 1`), most
+    /// lines first
+    pub categories: Option<Vec<Group>>,
+    /// Colour by field only: code of the other groups, their lines and their number
+    pub other_code: Option<u8>,
+    pub other_lines: Option<u64>,
+    pub other_groups: Option<u64>,
+    /// Time to build the level (and category) index, when this request built it
     pub build_ms: Option<f64>,
     /// Time to aggregate the buckets
     pub aggregate_ms: f64,
@@ -86,33 +104,75 @@ pub async fn get_minimap(Query(q): Query<MinimapQuery>) -> Result<Json<MinimapRe
     let n = q.buckets.unwrap_or(1000).clamp(1, MAX_BUCKETS);
     let (levels, was_built) = session.levels().await?;
 
-    let has_filter = q.levels.is_some() || q.domains.is_some() || q.keywords.is_some();
-    let matches = if has_filter {
-        let filter = LineFilter::from_csv(q.levels.as_deref(), q.domains.as_deref(), q.keywords.as_deref());
+    let color = q.color.as_deref().filter(|c| !c.is_empty() && *c != "level");
+    let cats = match color {
+        None => None,
+        Some(name) => {
+            let field = session
+                .format
+                .field_index(name)
+                .filter(|&i| session.format.fields()[i].kind == FieldKind::Text)
+                .ok_or_else(|| ApiError(StatusCode::BAD_REQUEST, format!("No text field '{name}' in the log format")))?;
+            Some(session.categories(name, field).await?)
+        }
+    };
+
+    let filter = LineFilter::from_query(q.levels.as_deref(), q.fields.as_deref(), q.keywords.as_deref())
+        .map_err(|e| ApiError(StatusCode::BAD_REQUEST, e))?;
+    let matches = if !filter.is_empty() {
         Some(session.matches(filter).await?.0)
     } else {
         None
     };
 
-    let build_ms = (!was_built).then(|| levels.build_time.as_secs_f64() * 1000.0);
+    let mut build_ms = (!was_built).then(|| levels.build_time.as_secs_f64() * 1000.0);
+    if let Some((c, false)) = &cats {
+        build_ms = Some(build_ms.unwrap_or(0.0) + c.build_time.as_secs_f64() * 1000.0);
+    }
+    let legend = cats.as_ref().map(|(c, _)| (c.top.clone(), c.other_lines, c.other_groups));
+    let color_name = color.unwrap_or("level").to_string();
+    let cats = cats.map(|(c, _)| c);
     let line_count = levels.line_count();
     let match_count = matches.as_ref().map(|m| m.match_count());
 
     if q.axis.as_deref() == Some("time") {
         let all_bins = session.time_bins(levels.clone()).await?;
+        let cat_bins = match (&cats, color) {
+            (Some(c), Some(name)) => Some(session.category_time_bins(name, levels.clone(), c.clone()).await?),
+            _ => None,
+        };
         let span = levels.time_span();
         let timed_lines = all_bins.timed_lines;
         let file = session.file.clone();
+        let format = session.format.clone();
+        let field = color_name.clone();
         let (all, first, matched, aggregate_ms) = tokio::task::spawn_blocking(move || {
             let started = Instant::now();
             let n = n as usize;
-            let (all, first) = all_bins.columns(n);
-            let matched = matches.as_ref().map(|m| {
-                let bins = m.time_bins.get_or_init(|| {
-                    Arc::new(TimeBins::build_ranges(&file, &levels, m.ranges()))
-                });
-                bins.columns(n).0
-            });
+            let (level_all, first) = all_bins.columns(n);
+            let (all, matched) = match (&cats, &cat_bins) {
+                (Some(c), Some(cb)) => {
+                    let matched = matches.as_ref().map(|m| {
+                        let cached = m.category_time_bins.lock().unwrap().iter().find(|e| e.0 == field).map(|e| e.1.clone());
+                        let bins = cached.unwrap_or_else(|| {
+                            let b = Arc::new(CategoryTimeBins::build_ranges(&file, &levels, c, &format, m.ranges()));
+                            m.category_time_bins.lock().unwrap().push((field.clone(), b.clone()));
+                            b
+                        });
+                        bins.columns(n)
+                    });
+                    (cb.columns(n), matched)
+                }
+                _ => {
+                    let matched = matches.as_ref().map(|m| {
+                        let bins = m.time_bins.get_or_init(|| {
+                            Arc::new(TimeBins::build_ranges(&file, &levels, &format, m.ranges()))
+                        });
+                        bins.columns(n).0
+                    });
+                    (level_all, matched)
+                }
+            };
             (all, first, matched, started.elapsed().as_secs_f64() * 1000.0)
         })
         .await
@@ -130,6 +190,11 @@ pub async fn get_minimap(Query(q): Query<MinimapQuery>) -> Result<Json<MinimapRe
             time_start_ms: span.map(|s| ms(s.0)),
             time_end_ms: span.map(|s| ms(s.1)),
             timed_lines: Some(timed_lines),
+            color: color_name,
+            categories: legend.as_ref().map(|l| l.0.clone()),
+            other_code: legend.as_ref().map(|_| categories::OTHER),
+            other_lines: legend.as_ref().map(|l| l.1),
+            other_groups: legend.as_ref().map(|l| l.2),
             build_ms,
             aggregate_ms,
         }));
@@ -138,8 +203,10 @@ pub async fn get_minimap(Query(q): Query<MinimapQuery>) -> Result<Json<MinimapRe
     let buckets = levels.bucket_count(n);
     let (all, matched, aggregate_ms) = tokio::task::spawn_blocking(move || {
         let started = Instant::now();
-        let all = levels.buckets(n);
-        let matched = matches.as_ref().map(|m| levels.buckets_in(n, m.ranges()));
+        let (all, matched) = match &cats {
+            Some(c) => (c.buckets(n), matches.as_ref().map(|m| c.buckets_in(n, m.ranges()))),
+            None => (levels.buckets(n), matches.as_ref().map(|m| levels.buckets_in(n, m.ranges()))),
+        };
         (all, matched, started.elapsed().as_secs_f64() * 1000.0)
     })
     .await
@@ -156,6 +223,11 @@ pub async fn get_minimap(Query(q): Query<MinimapQuery>) -> Result<Json<MinimapRe
         time_start_ms: None,
         time_end_ms: None,
         timed_lines: None,
+        color: color_name,
+        categories: legend.as_ref().map(|l| l.0.clone()),
+        other_code: legend.as_ref().map(|_| categories::OTHER),
+        other_lines: legend.as_ref().map(|l| l.1),
+        other_groups: legend.as_ref().map(|l| l.2),
         build_ms,
         aggregate_ms,
     }))

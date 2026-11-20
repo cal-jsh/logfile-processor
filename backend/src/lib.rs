@@ -9,12 +9,14 @@ pub mod logfile;
 pub mod model;
 pub mod parsing;
 
-use crate::log_storage::{save_user_log, Session};
-use crate::logfile::index::LogFile;
+use crate::log_storage::{get_user_log, remove_user_log, save_user_log, Session};
+use crate::logfile::index::{sample_lines, LogFile};
 use crate::logfile::scan::summarize;
 use crate::model::upload_response::UploadResponse;
+use crate::parsing::format::{detect, sample_fit, LogFormat};
 use axum::Router;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Instant;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::{debug, info};
@@ -39,33 +41,73 @@ pub fn desktop_router() -> Router {
         .merge(api::view::router())
         .merge(api::minimap::router())
         .merge(api::version::router())
+        .merge(api::format::router())
         .layer(cors)
 }
 
 /// Memory-map `path`, build the sparse line index and the summary, and register a
 /// session for it. Blocking: call it off the async runtime.
 ///
-/// The file is opened in place and never modified or deleted.
-pub fn open_session(path: PathBuf) -> std::io::Result<UploadResponse> {
+/// The line format is detected from the first lines, unless `pattern` (spdlog syntax)
+/// is given. The file is opened in place and never modified or deleted.
+pub fn open_session(path: PathBuf, pattern: Option<String>) -> std::io::Result<UploadResponse> {
+    let file = Arc::new(LogFile::open(&path)?);
+    start_session(path, file, pattern.as_deref())
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))
+}
+
+/// Open the file of an existing session again with another line format (`None`:
+/// detect it), reusing its line index. The old session is closed. Blocking.
+pub fn reformat_session(session_id: &str, pattern: Option<String>) -> Result<UploadResponse, String> {
+    let old = get_user_log(session_id).ok_or("Session ID not found")?;
+    let resp = start_session(old.path.clone(), old.file.clone(), pattern.as_deref())?;
+    remove_user_log(session_id);
+    Ok(resp)
+}
+
+fn start_session(path: PathBuf, file: Arc<LogFile>, pattern: Option<&str>) -> Result<UploadResponse, String> {
     let session_id = uuid::Uuid::new_v4().to_string();
-    let file = LogFile::open(&path)?;
+
     let started = Instant::now();
-    let summary = summarize(&file);
-    let summary_time = started.elapsed();
+    let sample = sample_lines(&file);
+    let sample: Vec<&str> = sample.iter().map(String::as_str).collect();
+    let (format, detected, sample_lines, sample_matched) = match pattern.map(str::trim) {
+        Some(p) if !p.is_empty() => {
+            let f = LogFormat::compile(p).map_err(|e| format!("Invalid pattern: {e}"))?;
+            let (n, m) = sample_fit(&f, &sample);
+            (f, false, n, m)
+        }
+        _ => {
+            let d = detect(&sample);
+            (d.format, true, d.sample_lines, d.matched_lines)
+        }
+    };
+    let format_ms = started.elapsed().as_secs_f64() * 1000.0;
+
+    let started = Instant::now();
+    let mut summary = summarize(&file, &format);
+    let summary_ms = started.elapsed().as_secs_f64() * 1000.0;
+    summary.format.detected = detected;
+    summary.format.sample_lines = sample_lines;
+    summary.format.sample_matched = sample_matched;
 
     let index_ms = file.index_time.as_secs_f64() * 1000.0;
-    let summary_ms = summary_time.as_secs_f64() * 1000.0;
     info!(
-        "Indexed {} lines ({} bytes) of {} in {:.1} ms, summary in {:.1} ms, session {}",
+        "Indexed {} lines ({} bytes) of {} in {:.1} ms, format {} `{}` ({}/{} sample lines) in {:.1} ms, summary in {:.1} ms, session {}",
         file.line_count(),
         file.len(),
         path.display(),
         index_ms,
+        if detected { "detected" } else { "set" },
+        format.pattern(),
+        sample_matched,
+        sample_lines,
+        format_ms,
         summary_ms,
         session_id
     );
     debug!("Summary: {:?}", summary);
 
-    save_user_log(&session_id, Session::new(path, file));
-    Ok(UploadResponse { session_id, summary, index_ms, summary_ms })
+    save_user_log(&session_id, Session::new(path, file, Arc::new(format)));
+    Ok(UploadResponse { session_id, summary, index_ms, summary_ms, format_ms })
 }

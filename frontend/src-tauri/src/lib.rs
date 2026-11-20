@@ -33,15 +33,26 @@ fn api_base_url(base: tauri::State<'_, ApiBase>) -> String {
     base.0.clone()
 }
 
-/// Open a log file in place by path and return its session and summary.
+/// Open a log file in place by path and return its session and summary. The line
+/// format is detected, unless `pattern` (spdlog syntax) is given.
 #[tauri::command]
-async fn open_log_path(path: String) -> Result<Opened, String> {
-    open(PathBuf::from(path)).await
+async fn open_log_path(path: String, pattern: Option<String>) -> Result<Opened, String> {
+    open(PathBuf::from(path), pattern).await
 }
 
-/// Show the native file-open dialog and open the chosen file. `None` if cancelled.
+/// Open the file of a session again with another line format (`None`: detect it).
+/// The old session is closed.
 #[tauri::command]
-async fn open_log_dialog(app: tauri::AppHandle) -> Result<Option<Opened>, String> {
+async fn reformat_log(session_id: String, pattern: Option<String>) -> Result<UploadResponse, String> {
+    tauri::async_runtime::spawn_blocking(move || logfile_processor::reformat_session(&session_id, pattern))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Show the native file-open dialog. Returns the chosen path, `None` if cancelled.
+/// The UI then opens it with `open_log_path`, with the pattern remembered for it.
+#[tauri::command]
+async fn pick_log_file(app: tauri::AppHandle) -> Result<Option<String>, String> {
     let picked = tauri::async_runtime::spawn_blocking(move || {
         app.dialog()
             .file()
@@ -54,7 +65,7 @@ async fn open_log_dialog(app: tauri::AppHandle) -> Result<Option<Opened>, String
     .map_err(|e| e.to_string())?;
     let Some(picked) = picked else { return Ok(None) };
     let path = picked.into_path().map_err(|e| e.to_string())?;
-    open(path).await.map(Some)
+    Ok(Some(path.to_string_lossy().into_owned()))
 }
 
 /// Which of these paths are files right now, for the recently opened list. Runs off the
@@ -77,7 +88,7 @@ async fn export_view(
     app: tauri::AppHandle,
     session_id: String,
     levels: Option<String>,
-    domains: Option<String>,
+    fields: Option<String>,
     keywords: Option<String>,
     context: u64,
     format: String,
@@ -100,7 +111,7 @@ async fn export_view(
     let rows = view::export_view_to_file(
         &session_id,
         levels.as_deref(),
-        domains.as_deref(),
+        fields.as_deref(),
         keywords.as_deref(),
         context,
         csv,
@@ -122,9 +133,9 @@ fn initial_file(initial: tauri::State<'_, InitialFile>) -> Result<Option<String>
     initial.0.lock().unwrap().take().transpose()
 }
 
-async fn open(path: PathBuf) -> Result<Opened, String> {
+async fn open(path: PathBuf, pattern: Option<String>) -> Result<Opened, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        logfile_processor::open_session(path.clone())
+        logfile_processor::open_session(path.clone(), pattern)
             .map(|log| Opened { path: path.to_string_lossy().into_owned(), log })
             .map_err(|e| format!("Could not open {}: {}", path.display(), e))
     })
@@ -224,7 +235,8 @@ fn run_with(initial: Option<Result<String, String>>) {
         .invoke_handler(tauri::generate_handler![
             api_base_url,
             open_log_path,
-            open_log_dialog,
+            pick_log_file,
+            reformat_log,
             export_view,
             files_exist,
             initial_file
