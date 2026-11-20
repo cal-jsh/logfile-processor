@@ -3,6 +3,7 @@ name = "logfile_processor_desktop"
 version = "0.1.0"
 description = "Log file processor desktop app"
 edition = "2021"
+license = "MIT"
 # `tauri dev` / `cargo run` start the viewer; `logfile_processor_cli` is its console companion
 default-run = "logfile_processor_desktop"
 
@@ -24,3 +25,6 @@ serde = { version = "1", features = ["derive"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
 tauri-plugin-opener = "2"
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
+serde_json = "1"

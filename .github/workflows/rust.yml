@@ -13,9 +13,10 @@
 # Publish the draft by hand once it looks right.
 #
 # Updater artifacts (signed installer + latest.json for the in-app "Update" button)
-# are only produced when the secret TAURI_SIGNING_PRIVATE_KEY and the variable
-# TAURI_UPDATER_PUBKEY exist (see the "Updater signing" step).
-# Without them the release is built exactly the same, just without updater files.
+# are only produced when the secret TAURI_SIGNING_PRIVATE_KEY exists (see the
+# "Updater signing" step). The matching public key is committed in tauri.conf.json
+# (plugins.updater). Without the secret the release is built exactly the same, just
+# without updater files, and installed apps are not offered it.
 
 name: CI
 
@@ -141,13 +142,14 @@ jobs:
         run: npm ci --legacy-peer-deps
 
       # ---- Updater signing (optional) -------------------------------------------
-      # Needs the secret TAURI_SIGNING_PRIVATE_KEY (+ _PASSWORD) and, as long as
-      # tauri.conf.json has no plugins.updater section yet, the repository variable
-      # TAURI_UPDATER_PUBKEY (contents of the .key.pub file).
-      # Then, in the CI checkout only: turn on bundle.createUpdaterArtifacts, add the
-      # updater section (pubkey + GitHub latest.json endpoint) if missing, and hand the
-      # key to the build, so tauri signs the installers (.sig files) and tauri-action
-      # adds latest.json to the release.
+      # Needs the secret TAURI_SIGNING_PRIVATE_KEY (+ _PASSWORD). The public key and
+      # the latest.json endpoint are committed in tauri.conf.json (plugins.updater);
+      # the repository variable TAURI_UPDATER_PUBKEY is only a fallback for a config
+      # without that section, and a warning shows if the two differ.
+      # Then, in the CI checkout only: turn on bundle.createUpdaterArtifacts (not
+      # committed, because a local `tauri build` without the private key would fail)
+      # and hand the key to the build, so tauri signs the installers (.sig files) and
+      # tauri-action adds latest.json to the release.
       # If anything is missing this step changes nothing and the release simply has
       # no updater files. Delete this step to switch signing off again.
       - name: Updater signing (only if key and public key are configured)
@@ -167,6 +169,12 @@ jobs:
           if [ "$has_updater" != "true" ] && [ -z "$PUBKEY" ]; then
             echo "::warning::TAURI_SIGNING_PRIVATE_KEY is set but the repository variable TAURI_UPDATER_PUBKEY is not (and tauri.conf.json has no plugins.updater): release built without updater artifacts."
             exit 0
+          fi
+          if [ "$has_updater" = "true" ] && [ -n "$PUBKEY" ]; then
+            conf_pubkey=$(node -p "require('./$conf').plugins.updater.pubkey")
+            if [ "$conf_pubkey" != "$(echo "$PUBKEY" | tr -d '[:space:]')" ]; then
+              echo "::warning::The repository variable TAURI_UPDATER_PUBKEY differs from plugins.updater.pubkey in tauri.conf.json. The committed one is used; installed apps reject updates signed with a key that does not match it."
+            fi
           fi
           node -e "
             const fs = require('fs');

@@ -1,10 +1,12 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Main window: core APIs, plus opening the project's GitHub pages (bug reports) in the default browser. The file dialog is opened from Rust.",
+  "description": "Main window: core APIs, the in-app update (check, download, relaunch), plus opening the project's GitHub pages (bug reports) in the default browser. The file dialog is opened from Rust.",
   "windows": ["main"],
   "permissions": [
     "core:default",
+    "updater:default",
+    "process:allow-restart",
     {
       "identifier": "opener:allow-open-url",
       "allow": [{ "url": "https://github.com/cal-jsh/logfile-processor/*" }]
