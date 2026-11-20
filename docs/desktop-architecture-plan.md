@@ -86,6 +86,9 @@ Memory stays small because nothing holds per-line strings: the index is ~8 bytes
 the tests of both crates on `windows-latest`. A `v*` tag (must equal the version in
 `tauri.conf.json`) builds the NSIS and MSI installers, signs the updater artifacts and
 `latest.json`, and puts them with the CLI exe on a draft GitHub release.
+`frontend/scripts/set-version.mjs` (`npm run set-version x.y.z`) keeps the version
+identical in tauri.conf.json, package.json/package-lock.json, both Cargo.toml files and
+both Cargo.lock files; without an argument it lists them and fails if they differ.
 
 **In-app update.** `tauri-plugin-updater` (`frontend/src/lib/updater.ts`,
 `UpdateDialog.tsx`) reads `releases/latest/download/latest.json`, so only a published
