@@ -417,11 +417,80 @@ fn today() -> String {
     format!("{y:04}-{m:02}-{d:02}")
 }
 
-/// Write every row of the view as text (original lines) or CSV to `out`.
-///
-/// CSV columns: `Line`, one per field of the format except the message, `Matched`,
+/// Writes lines of a log file as the export does: the original lines as text, or CSV
+/// with `Line`, one column per field of the format except the message, `Matched`,
 /// `Context`, then `Message`: the whole line, as before (stack traces and other lines
 /// without the format have empty field columns).
+struct RowWriter<'a> {
+    file: &'a LogFile,
+    format: &'a LogFormat,
+    /// The field columns (all but the message)
+    columns: Vec<usize>,
+    csv: bool,
+    buf: Vec<u8>,
+    /// Where the last read ended, so reading on from there needs no seek
+    known: Option<(u64, usize)>,
+}
+
+impl<'a> RowWriter<'a> {
+    fn new(file: &'a LogFile, format: &'a LogFormat, csv: bool) -> Self {
+        let columns = (0..format.fields().len()).filter(|&i| Some(i) != format.message_field()).collect();
+        Self { file, format, columns, csv, buf: Vec::with_capacity(MAX_DISPLAY_BYTES), known: None }
+    }
+
+    fn header(&mut self, out: &mut impl std::io::Write) -> std::io::Result<()> {
+        if !self.csv {
+            return Ok(());
+        }
+        self.buf.clear();
+        self.buf.extend_from_slice(b"Line");
+        for &i in &self.columns {
+            self.buf.push(b',');
+            csv_field(&mut self.buf, &self.format.fields()[i].label);
+        }
+        self.buf.extend_from_slice(b",Matched,Context,Message\n");
+        out.write_all(&self.buf)
+    }
+
+    /// One row: 0-based `line` with its bytes (without the line break).
+    fn row(&mut self, out: &mut impl std::io::Write, line: u64, bytes: &[u8], is_match: bool) -> std::io::Result<()> {
+        if self.csv {
+            let buf = &mut self.buf;
+            buf.clear();
+            let text = String::from_utf8_lossy(bytes);
+            let parsed = self.format.parse(&text);
+            buf.extend_from_slice((line + 1).to_string().as_bytes());
+            for &i in &self.columns {
+                buf.push(b',');
+                csv_field(buf, parsed.as_ref().map_or("", |p| p.get(&text, i)));
+            }
+            buf.extend_from_slice(if is_match { b",true,false," } else { b",false,true," });
+            csv_field(buf, &text);
+            buf.push(b'\n');
+            out.write_all(buf)
+        } else {
+            out.write_all(bytes)?;
+            out.write_all(b"\n")
+        }
+    }
+
+    /// Rows for the lines `first..end`, all matches or all context.
+    fn lines(&mut self, out: &mut impl std::io::Write, first: u64, end: u64, is_match: bool) -> std::io::Result<()> {
+        if first >= end {
+            return Ok(());
+        }
+        let file = self.file;
+        let mut it = file.lines_from_hint(first, self.known);
+        for (line, bytes) in it.by_ref().take((end - first) as usize) {
+            self.row(out, line, bytes, is_match)?;
+        }
+        self.known = Some(it.cursor());
+        Ok(())
+    }
+}
+
+/// Write every row of the view as text (original lines) or CSV to `out`
+/// (columns: see [`RowWriter`]).
 pub fn write_view(
     file: &LogFile,
     format: &LogFormat,
@@ -430,37 +499,10 @@ pub fn write_view(
     csv: bool,
     out: &mut impl std::io::Write,
 ) -> std::io::Result<()> {
-    let mut buf: Vec<u8> = Vec::with_capacity(MAX_DISPLAY_BYTES);
-    let columns: Vec<usize> =
-        (0..format.fields().len()).filter(|&i| Some(i) != format.message_field()).collect();
-    if csv {
-        buf.extend_from_slice(b"Line");
-        for &i in &columns {
-            buf.push(b',');
-            csv_field(&mut buf, &format.fields()[i].label);
-        }
-        buf.extend_from_slice(b",Matched,Context,Message\n");
-        out.write_all(&buf)?;
-    }
+    let mut w = RowWriter::new(file, format, csv);
+    w.header(out)?;
     for (_, l, bytes) in ViewLines::new(file, view, 0, view.row_count()) {
-        let is_match = matches.is_match(l);
-        if csv {
-            buf.clear();
-            let text = String::from_utf8_lossy(bytes);
-            let parsed = format.parse(&text);
-            buf.extend_from_slice((l + 1).to_string().as_bytes());
-            for &i in &columns {
-                buf.push(b',');
-                csv_field(&mut buf, parsed.as_ref().map_or("", |p| p.get(&text, i)));
-            }
-            buf.extend_from_slice(if is_match { b",true,false," } else { b",false,true," });
-            csv_field(&mut buf, &text);
-            out.write_all(&buf)?;
-        } else {
-            out.write_all(bytes)?;
-        }
-        out.write_all(b"
-")?;
+        w.row(out, l, bytes, matches.is_match(l))?;
     }
     out.flush()
 }
@@ -494,6 +536,57 @@ pub async fn export_view_to_file(
     .map_err(|e| e.to_string())?
     .map_err(|e| e.to_string())?;
     Ok(rows)
+}
+
+/// What [`filter_file`] wrote.
+pub struct FilterStats {
+    pub line_count: u64,
+    pub match_count: u64,
+    /// Rows written: matches plus context lines
+    pub row_count: u64,
+}
+
+/// Filter a file without a session (the command line) and write the rows as text or
+/// CSV to `out`, as they are found. Same filter and row writer as the viewer's export,
+/// and the same rows as its [`View`] with `context` lines (a test checks this), but
+/// nothing is collected: memory stays small however many lines match.
+pub fn filter_file(
+    file: &LogFile,
+    format: Arc<LogFormat>,
+    filter: LineFilter,
+    context: u64,
+    csv: bool,
+    out: &mut impl std::io::Write,
+) -> std::io::Result<FilterStats> {
+    let compiled = crate::logfile::scan::CompiledFilter::new(filter, format.clone());
+    let line_count = file.line_count();
+    let mut w = RowWriter::new(file, &format, csv);
+    w.header(out)?;
+    let (mut match_count, mut row_count) = (0u64, 0u64);
+    // `written`: first line not written yet; `tail`: end of the last match's context
+    let (mut written, mut tail) = (0u64, 0u64);
+    crate::logfile::scan::scan_streaming(file, &compiled, |ranges| {
+        for &(s, e) in ranges {
+            // the rest of the previous match's trailing context
+            let after = tail.min(s).max(written);
+            w.lines(out, written, after, false)?;
+            // leading context, not before what is written already
+            let before = s.saturating_sub(context).max(after);
+            w.lines(out, before, s, false)?;
+            w.lines(out, s, e, true)?;
+            row_count += (after - written) + (s - before) + (e - s);
+            match_count += e - s;
+            written = e;
+            tail = e.saturating_add(context).min(line_count);
+        }
+        Ok::<(), std::io::Error>(())
+    })?;
+    if tail > written {
+        w.lines(out, written, tail, false)?;
+        row_count += tail - written;
+    }
+    out.flush()?;
+    Ok(FilterStats { line_count, match_count, row_count })
 }
 
 /// Default export file name, e.g. `logs_2026-11-19.csv`.
@@ -544,6 +637,42 @@ mod tests {
              2,,,,false,true,    at frame\n\
              3,2026-11-20 10:00:00.002,8,error,true,false,[2026-11-20 10:00:00.002] [8] [error] boom\n"
         );
+    }
+
+    #[test]
+    fn streaming_filter_writes_the_same_rows_as_the_view_export() {
+        use crate::logfile::scan::{scan_matches, CompiledFilter};
+        use std::sync::atomic::AtomicBool;
+        // matches in runs, alone, at both ends and close together, with odd lines between
+        let mut text = String::new();
+        for i in 0..400u32 {
+            let level = if i % 7 == 0 || i % 31 < 3 || i == 399 { "error" } else { "info" };
+            if i % 11 == 5 {
+                text.push_str("    at frame\n");
+            } else {
+                text.push_str(&format!("[2026-11-20 10:00:00.{:03}] [{}] [{level}] line {i}\n", i % 1000, i % 4));
+            }
+        }
+        // small chunks, so the streaming scan hands over many waves
+        let file = LogFile::from_test_bytes(text.as_bytes(), 256);
+        let fmt = Arc::new(LogFormat::compile("[%Y-%m-%d %H:%M:%S.%e] [%t] [%l] %v").unwrap());
+        let cases = [(Some("error"), None), (None, Some(r#"{"thread":["2"]}"#)), (Some("nope"), None), (None, None)];
+        for (levels, fields) in cases {
+            for context in [0, 1, 2, 5, 1000] {
+                for csv in [false, true] {
+                    let filter = LineFilter::from_query(levels, fields, None).unwrap();
+                    let m = scan_matches(&file, &CompiledFilter::new(filter.clone(), fmt.clone()), &AtomicBool::new(false))
+                        .unwrap_or_else(|_| panic!("cancelled"));
+                    let v = m.view(context);
+                    let mut expected = Vec::new();
+                    write_view(&file, &fmt, &m, &v, csv, &mut expected).unwrap();
+                    let mut got = Vec::new();
+                    let stats = filter_file(&file, fmt.clone(), filter, context, csv, &mut got).unwrap();
+                    assert!(expected == got, "{levels:?} {fields:?} context {context} csv {csv}");
+                    assert_eq!((stats.match_count, stats.row_count), (m.match_count(), v.row_count()));
+                }
+            }
+        }
     }
 
     #[test]

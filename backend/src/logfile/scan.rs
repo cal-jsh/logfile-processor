@@ -1,7 +1,7 @@
 //! Parallel passes over a [`LogFile`]: the filter scan (producing match line numbers)
 //! and the summary.
 
-use crate::logfile::index::LogFile;
+use crate::logfile::index::{Chunk, LogFile};
 use crate::logfile::view::MatchSet;
 use crate::model::log_summary::{FieldValues, FormatInfo, LogSummary};
 use crate::parsing::format::{FieldKind, LogFormat};
@@ -110,6 +110,30 @@ impl CompiledFilter {
 #[derive(Debug)]
 pub struct Cancelled;
 
+/// The runs of consecutive matching lines of one chunk, as half-open `[start, end)`.
+fn chunk_matches(file: &LogFile, filter: &CompiledFilter, chunk: &Chunk) -> Vec<(u64, u64)> {
+    let mut ranges: Vec<(u64, u64)> = Vec::new();
+    for (line, bytes) in file.chunk_lines(chunk) {
+        if filter.matches(bytes) {
+            match ranges.last_mut() {
+                Some(r) if r.1 == line => r.1 = line + 1,
+                _ => ranges.push((line, line + 1)),
+            }
+        }
+    }
+    ranges
+}
+
+/// Append runs in file order, joining a run that continues the last one.
+fn append_ranges(ranges: &mut Vec<(u64, u64)>, more: Vec<(u64, u64)>) {
+    for r in more {
+        match ranges.last_mut() {
+            Some(last) if last.1 == r.0 => last.1 = r.1,
+            _ => ranges.push(r),
+        }
+    }
+}
+
 /// Scan the whole file in parallel and collect the line numbers that match.
 pub fn scan_matches(
     file: &LogFile,
@@ -120,35 +144,48 @@ pub fn scan_matches(
     let per_chunk: Vec<Option<Vec<(u64, u64)>>> = file
         .chunks()
         .par_iter()
-        .map(|chunk| {
-            if cancel.load(Ordering::Relaxed) {
-                return None;
-            }
-            // runs of consecutive matching lines, as half-open [start, end)
-            let mut ranges: Vec<(u64, u64)> = Vec::new();
-            for (line, bytes) in file.chunk_lines(chunk) {
-                if filter.matches(bytes) {
-                    match ranges.last_mut() {
-                        Some(r) if r.1 == line => r.1 = line + 1,
-                        _ => ranges.push((line, line + 1)),
-                    }
-                }
-            }
-            Some(ranges)
-        })
+        .map(|chunk| (!cancel.load(Ordering::Relaxed)).then(|| chunk_matches(file, filter, chunk)))
         .collect();
 
     let mut ranges: Vec<(u64, u64)> = Vec::new();
     for chunk_ranges in per_chunk {
-        let chunk_ranges = chunk_ranges.ok_or(Cancelled)?;
-        for r in chunk_ranges {
-            match ranges.last_mut() {
-                Some(last) if last.1 == r.0 => last.1 = r.1,
-                _ => ranges.push(r),
-            }
-        }
+        append_ranges(&mut ranges, chunk_ranges.ok_or(Cancelled)?);
     }
     Ok(MatchSet::new(ranges, file.line_count(), started.elapsed()))
+}
+
+/// Like [`scan_matches`], but hands the matching runs to `sink` a few chunks at a time,
+/// in file order, while the next chunks are scanned. Memory stays bounded however many
+/// lines match (the command line writes them out as they come). A run may continue
+/// the last one of the previous call. Stops at the first error of `sink`.
+pub fn scan_streaming<E>(
+    file: &LogFile,
+    filter: &CompiledFilter,
+    mut sink: impl FnMut(&[(u64, u64)]) -> Result<(), E>,
+) -> Result<(), E> {
+    // enough chunks per wave to keep every thread busy, one wave ahead of the sink
+    let wave = rayon::current_num_threads().max(1) * 2;
+    let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<(u64, u64)>>(1);
+    std::thread::scope(|scope| {
+        scope.spawn(move || {
+            for group in file.chunks().chunks(wave) {
+                let per_chunk: Vec<Vec<(u64, u64)>> =
+                    group.par_iter().map(|chunk| chunk_matches(file, filter, chunk)).collect();
+                let mut ranges = Vec::new();
+                for r in per_chunk {
+                    append_ranges(&mut ranges, r);
+                }
+                // the sink failed and is gone: stop scanning
+                if tx.send(ranges).is_err() {
+                    break;
+                }
+            }
+        });
+        for ranges in rx {
+            sink(&ranges)?;
+        }
+        Ok(())
+    })
 }
 
 /// Which fields the summary looks at.

@@ -19,9 +19,10 @@ import { Button } from "./ui/button";
 import { canonicalLevel, colorMap, LEVEL_ORDER } from "../lib/colorMap";
 import type { MinimapAxis } from "./Minimap";
 import { cn } from "@/lib/utils";
-import { Bug, FileText, FolderOpen, Minus, Plus, Search, SlidersHorizontal } from "lucide-react";
+import { Bug, FileText, SquareTerminal, FolderOpen, Minus, Plus, Search, SlidersHorizontal } from "lucide-react";
 import { useState } from "react";
 import BugReportDialog from "./BugReportDialog";
+import CliHelpDialog from "./CliHelpDialog";
 import FormatDialog from "./FormatDialog";
 
 interface Props {
@@ -140,6 +141,7 @@ export default function LogSummarySidebar({
   ];
   const levelTotal = levelCounts.reduce((a, b) => a + b.count, 0);
   const [bugReportOpen, setBugReportOpen] = useState(false);
+  const [cliHelpOpen, setCliHelpOpen] = useState(false);
   const otherLines =
     summary.line_count != null && summary.line_count !== summary.total_lines
       ? summary.line_count - summary.total_lines
@@ -438,6 +440,16 @@ export default function LogSummarySidebar({
         <SidebarMenu>
           <SidebarMenuItem>
             <SidebarMenuButton
+              tooltip="Command line options"
+              onClick={() => setCliHelpOpen(true)}
+              className="text-muted-foreground"
+            >
+              <SquareTerminal />
+              <span>Command line</span>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+          <SidebarMenuItem>
+            <SidebarMenuButton
               tooltip="Report a bug"
               onClick={() => setBugReportOpen(true)}
               className="text-muted-foreground"
@@ -448,6 +460,7 @@ export default function LogSummarySidebar({
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarFooter>
+      <CliHelpDialog open={cliHelpOpen} onOpenChange={setCliHelpOpen} />
       <BugReportDialog open={bugReportOpen} onOpenChange={setBugReportOpen} />
       <FormatDialog
         open={formatOpen}

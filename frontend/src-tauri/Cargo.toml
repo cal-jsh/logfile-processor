@@ -3,6 +3,8 @@ name = "logfile_processor_desktop"
 version = "0.1.0"
 description = "Log file processor desktop app"
 edition = "2021"
+# `tauri dev` / `cargo run` start the viewer; `logfile_processor_cli` is its console companion
+default-run = "logfile_processor_desktop"
 
 [lib]
 name = "logfile_processor_desktop_lib"

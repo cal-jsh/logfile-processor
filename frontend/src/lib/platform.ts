@@ -55,3 +55,15 @@ export function exportView(args: {
 export function initialFile(): Promise<string | null> {
   return invoke<string | null>("initial_file");
 }
+
+export interface CliHelp {
+  /** The `--help` text of the command line */
+  usage: string;
+  /** Full path of logfile_processor_cli.exe, if it is next to the viewer */
+  cli_path: string | null;
+}
+
+/** The command line's help text, for the "Command line" dialog (the same as `--help`). */
+export function cliHelp(): Promise<CliHelp> {
+  return invoke<CliHelp>("cli_help");
+}

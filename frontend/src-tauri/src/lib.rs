@@ -7,6 +7,7 @@
 //! deleted when the session closes.
 
 pub mod cli;
+pub mod headless;
 
 use cli::Cli;
 use logfile_processor::api::view;
@@ -147,17 +148,19 @@ async fn open(path: PathBuf, pattern: Option<String>) -> Result<Opened, String> 
 /// Returns the process exit code.
 pub fn start() -> i32 {
     let mut args = std::env::args_os();
-    let exe = args
-        .next()
-        .map(PathBuf::from)
-        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-        .unwrap_or_else(|| "logfile_processor_desktop.exe".into());
+    args.next(); // the program
 
     let files = match cli::parse(args) {
         Ok(Cli::Help) => {
             cli::attach_parent_console();
-            print!("{}", cli::usage(&exe));
+            print!("{}", cli::usage());
             return 0;
+        }
+        Ok(Cli::Filter(f)) => {
+            // Works when the output is piped or redirected (the shell then waits);
+            // `logfile_processor_cli` is the version a terminal waits for.
+            cli::attach_parent_console();
+            return headless::run(&f);
         }
         Ok(Cli::Version) => {
             cli::attach_parent_console();
@@ -200,6 +203,83 @@ pub fn start() -> i32 {
     0
 }
 
+/// Entry point of `logfile_processor_cli`, the console companion: filters without a
+/// window, or starts the viewer exe next to it with the files to open. A terminal
+/// waits for it, so exit codes and output arrive in order. Returns the exit code.
+pub fn cli_main() -> i32 {
+    let files = match cli::parse(std::env::args_os().skip(1)) {
+        Ok(Cli::Help) => {
+            print!("{}", cli::usage());
+            return 0;
+        }
+        Ok(Cli::Version) => {
+            println!("Logfile Processor {}", env!("CARGO_PKG_VERSION"));
+            return 0;
+        }
+        Ok(Cli::Filter(f)) => return headless::run(&f),
+        Ok(Cli::Open(files)) => files,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 2;
+        }
+    };
+    let mut paths = Vec::new();
+    for f in &files {
+        match cli::check_file(f) {
+            Ok(p) => paths.push(p),
+            Err(e) => {
+                eprintln!("error: {e}");
+                return 1;
+            }
+        }
+    }
+    let Some(viewer) = viewer_exe() else {
+        eprintln!("error: the viewer ({}) is not next to this program", cli::GUI_EXES[0]);
+        return 1;
+    };
+    // The viewer would otherwise log into this terminal, or hold its pipe, after we return.
+    cli::keep_std_handles_private();
+    let spawned = std::process::Command::new(&viewer)
+        .arg("--")
+        .args(&paths)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    match spawned {
+        Ok(_) => 0,
+        Err(e) => {
+            eprintln!("error: could not start {}: {e}", viewer.display());
+            1
+        }
+    }
+}
+
+/// The viewer exe in the folder of the running program.
+fn viewer_exe() -> Option<PathBuf> {
+    let dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
+    cli::GUI_EXES.iter().map(|n| dir.join(n)).find(|p| p.is_file())
+}
+
+/// For the "Command line" dialog: the help text and where the command line program is.
+#[derive(Serialize)]
+struct CliHelp {
+    usage: String,
+    /// Full path of `logfile_processor_cli.exe`, if it is next to the viewer
+    cli_path: Option<String>,
+}
+
+#[tauri::command]
+fn cli_help() -> CliHelp {
+    let exe = format!("{}{}", cli::CLI_EXE, std::env::consts::EXE_SUFFIX);
+    let cli_path = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join(&exe)))
+        .filter(|p| p.is_file())
+        .map(|p| p.to_string_lossy().into_owned());
+    CliHelp { usage: cli::usage(), cli_path }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     run_with(None)
@@ -239,7 +319,8 @@ fn run_with(initial: Option<Result<String, String>>) {
             reformat_log,
             export_view,
             files_exist,
-            initial_file
+            initial_file,
+            cli_help
         ])
         .run(tauri::generate_context!())
         .expect("error while running the desktop app");

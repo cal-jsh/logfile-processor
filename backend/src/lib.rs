@@ -65,23 +65,38 @@ pub fn reformat_session(session_id: &str, pattern: Option<String>) -> Result<Upl
     Ok(resp)
 }
 
+/// The line format of a file, and how well it fits the first lines.
+pub struct ChosenFormat {
+    pub format: LogFormat,
+    /// Detected (not given as a pattern)
+    pub detected: bool,
+    pub sample_lines: usize,
+    pub sample_matched: usize,
+}
+
+/// Compile `pattern` (spdlog syntax), or detect the format from the first lines when
+/// there is none. The viewer and the command line both choose the format this way.
+pub fn choose_format(file: &LogFile, pattern: Option<&str>) -> Result<ChosenFormat, String> {
+    let sample = sample_lines(file);
+    let sample: Vec<&str> = sample.iter().map(String::as_str).collect();
+    Ok(match pattern.map(str::trim) {
+        Some(p) if !p.is_empty() => {
+            let format = LogFormat::compile(p).map_err(|e| format!("Invalid pattern: {e}"))?;
+            let (sample_lines, sample_matched) = sample_fit(&format, &sample);
+            ChosenFormat { format, detected: false, sample_lines, sample_matched }
+        }
+        _ => {
+            let d = detect(&sample);
+            ChosenFormat { format: d.format, detected: true, sample_lines: d.sample_lines, sample_matched: d.matched_lines }
+        }
+    })
+}
+
 fn start_session(path: PathBuf, file: Arc<LogFile>, pattern: Option<&str>) -> Result<UploadResponse, String> {
     let session_id = uuid::Uuid::new_v4().to_string();
 
     let started = Instant::now();
-    let sample = sample_lines(&file);
-    let sample: Vec<&str> = sample.iter().map(String::as_str).collect();
-    let (format, detected, sample_lines, sample_matched) = match pattern.map(str::trim) {
-        Some(p) if !p.is_empty() => {
-            let f = LogFormat::compile(p).map_err(|e| format!("Invalid pattern: {e}"))?;
-            let (n, m) = sample_fit(&f, &sample);
-            (f, false, n, m)
-        }
-        _ => {
-            let d = detect(&sample);
-            (d.format, true, d.sample_lines, d.matched_lines)
-        }
-    };
+    let ChosenFormat { format, detected, sample_lines, sample_matched } = choose_format(&file, pattern)?;
     let format_ms = started.elapsed().as_secs_f64() * 1000.0;
 
     let started = Instant::now();
