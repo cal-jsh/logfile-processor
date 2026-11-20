@@ -113,7 +113,7 @@ fn initial_file(initial: tauri::State<'_, InitialFile>) -> Result<Option<String>
 
 async fn open(path: PathBuf) -> Result<Opened, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        logfile_processor::open_session(path.clone(), false)
+        logfile_processor::open_session(path.clone())
             .map(|log| Opened { path: path.to_string_lossy().into_owned(), log })
             .map_err(|e| format!("Could not open {}: {}", path.display(), e))
     })

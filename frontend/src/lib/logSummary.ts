@@ -1,7 +1,5 @@
-/* generated using openapi-typescript-codegen -- do no edit */
-/* istanbul ignore file */
-/* tslint:disable */
-/* eslint-disable */
+/* Summary of an opened log file, as returned by the Tauri commands that open one.
+   Hand-maintained: keep in sync with backend/src/model/log_summary.rs. */
 
 export type LogSummary = {
     /**

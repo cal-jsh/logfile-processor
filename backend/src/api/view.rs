@@ -6,8 +6,9 @@
 //!   numbers, and expands them by `context` lines. It returns the row count.
 //! * `GET /view/rows` returns the text of a range of rows of that view.
 //! * `GET /view/matches` returns the match line numbers themselves.
-//! * `GET /view/row_of_line`, `/view/search` and `/view/export` support jumping,
-//!   searching inside the results and downloading them.
+//! * `GET /view/row_of_line` and `/view/search` support jumping and searching inside
+//!   the results. Exporting them to a file is `export_view_to_file`, called by the
+//!   desktop app.
 //!
 //! Filter results are cached per session, so scrolling or changing `context` never
 //! rescans the file. All line numbers in this API are 1-based; rows are 0-based.
@@ -21,9 +22,8 @@ use crate::parsing::line_filter::LineFilter;
 use crate::parsing::parser::split_log_line;
 
 use axum::{
-    body::{Body, Bytes},
     extract::Query,
-    http::{header, StatusCode},
+    http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
@@ -48,7 +48,6 @@ pub fn router() -> Router {
         .route("/view/matches", get(get_view_matches))
         .route("/view/row_of_line", get(get_row_of_line))
         .route("/view/search", get(search_view))
-        .route("/view/export", get(export_view))
         .route("/close_session", post(close_session))
 }
 
@@ -365,7 +364,7 @@ pub async fn search_view(Query(q): Query<ViewQuery>) -> Result<Json<SearchRespon
     Ok(Json(resp))
 }
 
-// ---------------------------------------------------------------- /view/export
+// ---------------------------------------------------------------- export
 
 fn csv_field(out: &mut Vec<u8>, s: &str) {
     if s.contains([',', '"', '\n', '\r']) {
@@ -377,7 +376,7 @@ fn csv_field(out: &mut Vec<u8>, s: &str) {
     }
 }
 
-/// UTC date as YYYY-MM-DD, for the download file name.
+/// UTC date as YYYY-MM-DD, for the export file name.
 fn today() -> String {
     let days = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -433,7 +432,6 @@ pub fn write_view(
 }
 
 /// Export the view of an open session (filter + context) to a local file.
-/// Used by the desktop app, whose webview cannot download from the API.
 pub async fn export_view_to_file(
     session_id: &str,
     levels: Option<&str>,
@@ -462,68 +460,6 @@ pub async fn export_view_to_file(
     .map_err(|e| e.to_string())?
     .map_err(|e| e.to_string())?;
     Ok(rows)
-}
-
-/// Buffers writes and sends them as body chunks; fails once the client is gone.
-struct ChannelWriter {
-    tx: tokio::sync::mpsc::Sender<Result<Bytes, std::io::Error>>,
-    buf: Vec<u8>,
-}
-
-impl ChannelWriter {
-    const FLUSH_AT: usize = 256 * 1024;
-    fn send(&mut self) -> std::io::Result<()> {
-        if self.buf.is_empty() {
-            return Ok(());
-        }
-        let chunk = Bytes::from(std::mem::take(&mut self.buf));
-        self.tx
-            .blocking_send(Ok(chunk))
-            .map_err(|_| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "client went away"))
-    }
-}
-
-impl std::io::Write for ChannelWriter {
-    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
-        self.buf.extend_from_slice(data);
-        if self.buf.len() >= Self::FLUSH_AT {
-            self.send()?;
-        }
-        Ok(data.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.send()
-    }
-}
-
-/// Download every row of the view as text (original lines) or CSV, streamed straight
-/// from the memory-mapped file.
-pub async fn export_view(Query(q): Query<ViewQuery>) -> Result<Response, ApiError> {
-    let csv = q.format.as_deref() == Some("csv");
-    let r = resolve(&q).await?;
-    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(8);
-
-    tokio::task::spawn_blocking(move || {
-        let mut out = ChannelWriter { tx, buf: Vec::with_capacity(ChannelWriter::FLUSH_AT) };
-        // an error only means the client went away
-        let _ = write_view(&r.session.file, &r.matches, &r.view, csv, &mut out);
-    });
-
-    let stream = futures::stream::unfold(rx, |mut rx| async move {
-        rx.recv().await.map(|item| (item, rx))
-    });
-    let mime = if csv { "text/csv" } else { "text/plain" };
-    Ok((
-        [
-            (header::CONTENT_TYPE, mime.to_string()),
-            (
-                header::CONTENT_DISPOSITION,
-                format!("attachment; filename=\"{}\"", export_file_name(csv)),
-            ),
-        ],
-        Body::from_stream(stream),
-    )
-        .into_response())
 }
 
 /// Default export file name, e.g. `logs_2026-11-19.csv`.

@@ -8,7 +8,7 @@ use crate::logfile::scan::{scan_matches, Cancelled, CompiledFilter};
 use crate::logfile::view::MatchSet;
 use crate::parsing::line_filter::LineFilter;
 // tracing
-use tracing::{info, warn};
+use tracing::info;
 // once_cell
 use once_cell::sync::Lazy;
 // std
@@ -25,9 +25,6 @@ type MatchCell = Arc<tokio::sync::OnceCell<Arc<MatchSet>>>;
 pub struct Session {
     pub path: PathBuf,
     pub file: Arc<LogFile>,
-    /// The file is a private copy (an upload), deleted when the session closes.
-    /// Files opened in place (desktop app) are only unmapped.
-    pub owned: bool,
     queries: Mutex<QueryCache>,
     /// Per-line log levels for the minimap, built on first use.
     levels: tokio::sync::OnceCell<Arc<LevelIndex>>,
@@ -50,8 +47,8 @@ pub enum QueryError {
 }
 
 impl Session {
-    pub fn new(path: PathBuf, file: LogFile, owned: bool) -> Self {
-        Self { path, file: Arc::new(file), owned, queries: Mutex::new(QueryCache::default()), levels: Default::default(), time_bins: Default::default() }
+    pub fn new(path: PathBuf, file: LogFile) -> Self {
+        Self { path, file: Arc::new(file), queries: Mutex::new(QueryCache::default()), levels: Default::default(), time_bins: Default::default() }
     }
 
     /// The lines matching `filter`, from the cache or by scanning the file.
@@ -198,16 +195,9 @@ pub fn remove_user_log(session_id: &str) {
         (removed, map.len())
     };
     if let Some(session) = removed {
-        let path = session.path.clone();
-        let owned = session.owned;
-        // The file must be unmapped before it can be deleted on Windows. A request that
-        // is still running holds its own reference; the delete then fails and is logged.
-        drop(session);
-        if !owned {
-            info!("Closed {} (opened in place, not deleted)", path.display());
-        } else if let Err(e) = std::fs::remove_file(&path) {
-            warn!("Could not delete {}: {}", path.display(), e);
-        }
+        // A request that is still running holds its own reference; the file is
+        // unmapped when the last one is dropped.
+        info!("Closed {}", session.path.display());
     }
     info!("Removed log for session_id: {}", session_id);
     info!("Currently {} log files stored", count);

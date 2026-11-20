@@ -9,8 +9,7 @@ import {
   DialogTitle,
 } from "./ui/dialog";
 import { Button } from "./ui/button";
-import { copyText, gatherBugReportInfo, ISSUES_URL, openIssues } from "../lib/bugReport";
-import { isDesktop } from "../lib/platform";
+import { copyText, gatherBugReportInfo, openIssues } from "../lib/bugReport";
 
 interface Props {
   open: boolean;
@@ -82,23 +81,14 @@ export default function BugReportDialog({ open, onOpenChange }: Props) {
 
         <DialogFooter className="items-center sm:justify-between">
           <span className="text-xs text-destructive">{linkError}</span>
-          {isDesktop ? (
-            <Button
-              onClick={() =>
-                openIssues().catch((e) => setLinkError(`Could not open the browser: ${e}`))
-              }
-            >
-              <ExternalLink />
-              Open GitHub issues
-            </Button>
-          ) : (
-            <Button asChild>
-              <a href={ISSUES_URL} target="_blank" rel="noopener noreferrer">
-                <ExternalLink />
-                Open GitHub issues
-              </a>
-            </Button>
-          )}
+          <Button
+            onClick={() =>
+              openIssues().catch((e) => setLinkError(`Could not open the browser: ${e}`))
+            }
+          >
+            <ExternalLink />
+            Open GitHub issues
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { LogViewer } from "../components/LogViewer";
-import type { LogSummary } from "../../openapi/client/models/LogSummary";
+import type { LogSummary } from "../lib/logSummary";
 import SearchableMultiSelect from "../components/SearchableMultiSelect";
 import LogSummarySidebar from "../components/LogSummarySidebar";
 import { SidebarProvider, SidebarInset, SidebarTrigger } from "../components/ui/sidebar";
@@ -13,9 +13,10 @@ import type { MinimapAxis } from "../components/Minimap";
 
 interface DashboardProps {
     sessionId: string;
-    baseUrl: string; // e.g. "http://localhost:8080"
+    /** The in-process API, e.g. "http://127.0.0.1:51234" */
+    baseUrl: string;
     summary: LogSummary;
-    /** Path (desktop) or name (web) of the open file */
+    /** Path of the open file */
     fileName?: string;
     /** Close this file and go back to the start page */
     onClose?: () => void;
@@ -109,22 +110,6 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
         setSelectedKeywords([]);
         setNewKeyword("");
     };
-
-    // Cleanup session on exit
-    useEffect(() => {
-        const cleanupSession = () => {
-            const url = `${baseUrl}/close_session?session_id=${encodeURIComponent(sessionId)}`;
-            navigator.sendBeacon(url);
-        };
-
-        window.addEventListener("beforeunload", cleanupSession);
-        window.addEventListener("unload", cleanupSession);
-
-        return () => {
-            window.removeEventListener("beforeunload", cleanupSession);
-            window.removeEventListener("unload", cleanupSession);
-        };
-    }, [sessionId, baseUrl]);
 
     return (
         <SidebarProvider defaultOpen={true}>

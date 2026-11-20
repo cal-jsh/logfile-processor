@@ -1,9 +1,7 @@
 /* Version and environment info for bug reports, gathered automatically. */
 import { getTauriVersion, getVersion } from "@tauri-apps/api/app";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { getApiBase, isDesktop } from "./platform";
-
-declare const __APP_VERSION__: string;
+import { getApiBase } from "./platform";
 
 export const ISSUES_URL = "https://github.com/cal-jsh/logfile-processor/issues";
 
@@ -90,28 +88,18 @@ async function backendVersion(): Promise<string> {
 /** Plain-text block to paste into a GitHub issue. */
 export async function gatherBugReportInfo(): Promise<string> {
   const [os, backend] = await Promise.all([osName(), backendVersion()]);
+  const [version, tauri, engine] = await Promise.all([
+    getVersion().catch(() => "unknown"),
+    getTauriVersion().catch(() => "unknown"),
+    browserName(),
+  ]);
   const lines: string[] = [];
-  if (isDesktop) {
-    const [version, tauri, engine] = await Promise.all([
-      getVersion().catch(() => "unknown"),
-      getTauriVersion().catch(() => "unknown"),
-      browserName(),
-    ]);
-    lines.push(`Logfile Processor version: ${version}`);
-    lines.push(`Backend version: ${backend}`);
-    lines.push(`Runtime: Desktop app (Tauri ${tauri})`);
-    lines.push(`OS: ${os}`);
-    // e.g. "Microsoft Edge WebView2 142.0.3595.53" on Windows
-    if (engine) lines.push(`WebView: ${engine}`);
-  } else {
-    const browser = await browserName();
-    lines.push(`Logfile Processor version: ${__APP_VERSION__}`);
-    lines.push(`Backend version: ${backend}`);
-    lines.push(`Runtime: Web browser`);
-    lines.push(`OS: ${os}`);
-    if (browser) lines.push(`Browser: ${browser}`);
-    lines.push(`User agent: ${navigator.userAgent}`);
-  }
+  lines.push(`Logfile Processor version: ${version}`);
+  lines.push(`Backend version: ${backend}`);
+  lines.push(`Runtime: Desktop app (Tauri ${tauri})`);
+  lines.push(`OS: ${os}`);
+  // e.g. "Microsoft Edge WebView2 142.0.3595.53" on Windows
+  if (engine) lines.push(`WebView: ${engine}`);
   lines.push(`Language: ${navigator.language}`);
   lines.push(`Screen: ${window.screen.width}x${window.screen.height} @${Math.round(window.devicePixelRatio * 100) / 100}x`);
   return lines.join("\n");
@@ -137,7 +125,7 @@ export async function copyText(text: string): Promise<void> {
   if (!ok) throw new Error("Copy failed");
 }
 
-/** Desktop: open in the default browser (a plain link would navigate the webview). */
+/** Open in the default browser (a plain link would navigate the webview). */
 export async function openIssues(): Promise<void> {
   await openUrl(ISSUES_URL);
 }

@@ -1,47 +1,23 @@
 //! Log file processor: memory-mapped, indexed log files behind an HTTP viewport API.
 //!
-//! Used by the `logfile_processor` web server binary and by the Tauri desktop app,
-//! which serves the same API on a private localhost port and opens files by path.
+//! Used by the Tauri desktop app (`frontend/src-tauri`), which serves the API on a
+//! private localhost port and opens files in place by path.
 
 pub mod api;
-pub mod api_doc;
 pub mod log_storage;
 pub mod logfile;
 pub mod model;
 pub mod parsing;
 
-use crate::api_doc::ApiDoc;
 use crate::log_storage::{save_user_log, Session};
 use crate::logfile::index::LogFile;
 use crate::logfile::scan::summarize;
 use crate::model::upload_response::UploadResponse;
-use axum::{extract::DefaultBodyLimit, Router};
+use axum::Router;
 use std::path::PathBuf;
 use std::time::Instant;
 use tower_http::cors::{Any, CorsLayer};
-use tower_http::limit::RequestBodyLimitLayer;
 use tracing::{debug, info};
-use utoipa::OpenApi;
-use utoipa_swagger_ui::SwaggerUi;
-
-/// All HTTP routes (upload, viewport API, Swagger UI), with open CORS.
-pub fn router() -> Router {
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
-
-    Router::new()
-        .merge(api::upload::router())
-        .layer(DefaultBodyLimit::disable())
-        .layer(RequestBodyLimitLayer::new(1024 * 1024 * 1024))
-        .merge(api::filter::router())
-        .merge(api::view::router())
-        .merge(api::minimap::router())
-        .merge(api::version::router())
-        .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
-        .layer(cors)
-}
 
 /// Routes for the desktop app: the viewport API only. No upload (files are opened in
 /// place by path), and CORS limited to the app's own webview origins.
@@ -69,9 +45,8 @@ pub fn desktop_router() -> Router {
 /// Memory-map `path`, build the sparse line index and the summary, and register a
 /// session for it. Blocking: call it off the async runtime.
 ///
-/// `owned` means the file is a private copy (an upload) that is deleted when the
-/// session closes. A file opened in place by the desktop app is never deleted.
-pub fn open_session(path: PathBuf, owned: bool) -> std::io::Result<UploadResponse> {
+/// The file is opened in place and never modified or deleted.
+pub fn open_session(path: PathBuf) -> std::io::Result<UploadResponse> {
     let session_id = uuid::Uuid::new_v4().to_string();
     let file = LogFile::open(&path)?;
     let started = Instant::now();
@@ -91,6 +66,6 @@ pub fn open_session(path: PathBuf, owned: bool) -> std::io::Result<UploadRespons
     );
     debug!("Summary: {:?}", summary);
 
-    save_user_log(&session_id, Session::new(path, file, owned));
+    save_user_log(&session_id, Session::new(path, file));
     Ok(UploadResponse { session_id, summary, index_ms, summary_ms })
 }

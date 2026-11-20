@@ -1,14 +1,10 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import path from "path";
-import pkg from "./package.json";
 
 export default defineConfig({
   plugins: [react()],
-  // Shown in "Report a bug" in the web app (the desktop app asks Tauri for its version)
-  define: {
-    __APP_VERSION__: JSON.stringify(pkg.version),
-  },
+  // `tauri dev` loads the UI from here (tauri.conf.json devUrl)
   server: {
     port: 3000,
   },

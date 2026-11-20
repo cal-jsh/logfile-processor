@@ -1,6 +1,6 @@
 # Logfile Processor: Desktop Architecture Plan
 
-_Status: proposal, no code changed. Written 2026-11-19 from a read of the code in `C:\Projects\rust\logfile-processor`._
+_Status: proposal written 2026-11-19. The Tauri shell (phase 1) exists; since 2026-11-20 the app is desktop only._
 
 ## TL;DR
 
@@ -12,7 +12,9 @@ _Status: proposal, no code changed. Written 2026-11-19 from a read of the code i
 
 ---
 
-## 1. What exists today
+## 1. Starting point (2026-11-19)
+
+Snapshot from before the desktop app. The upload, standalone server, Swagger UI, `/filter` and `build.py` have since been removed.
 
 | Part | What it does | Files |
 |---|---|---|
@@ -51,10 +53,8 @@ logfile-processor/
     annotations/    # annotation model, SQLite store, sync protocol types
   apps/
     desktop/        # Tauri app: src-tauri (commands) + the existing React frontend
-    server/         # optional axum service: annotation sync (+ today's web mode if you want to keep it)
+    server/         # optional axum service: annotation sync
 ```
-
-`logcore` is used by both the desktop app and the server, so the web version can survive if you want it.
 
 ---
 
@@ -113,7 +113,7 @@ There is a real tension here. "Desktop app" suggests everything local; "several 
 - Only if you want Google-Docs-style **simultaneous typing in the same comment** do you need a CRDT for that text field; `yrs` (the Rust port of Yjs) fits that narrowly.
 - Presence ("Anna is looking at line 1,203,442") is a cheap addition on the same socket.
 - Auth: start with a shared workspace token; add proper accounts later if this leaves your team.
-- The existing axum backend (routing, tracing, OpenAPI) is a natural home for this service.
+- The existing axum backend (routing, tracing) is a natural home for this service.
 
 **Assumption to confirm:** I read "multi user edits of the same file" as shared *annotations* (comments, highlights) on an unchanged log. If you mean editing the log text itself, that is a different design (piece-table editing plus a CRDT over the text) and much harder at tens of GB. I'd strongly advise against it for logs.
 
@@ -174,13 +174,13 @@ Rough sizes for a 50 GB file with ~100-byte lines: **~500 million lines**. Every
 
 Bottlenecks (all block the tens-of-GB goal):
 
-1. **`upload.rs`: whole-file upload copy plus `tokio::fs::read_to_string`** of the entire log into RAM for the summary, with a 1 GB request limit. Fails above the limit and on invalid UTF-8.
+1. ~~**`upload.rs`: whole-file upload copy plus `tokio::fs::read_to_string`**~~ Removed: files are opened in place.
 2. **`parser.rs`: full capture regex per line** plus several `String` allocations per line (`level.to_string()` just to call `contains`), single-threaded.
 3. **`stream_filtered_logs.rs`: per-line async overhead.** Each line goes through `LinesCodec` (allocates a `String`), up to three `tokio::Mutex` lock/awaits, six `Arc`/`Vec` clones in the closure, `serde_json` serialization and an SSE frame. Every filter change re-scans the whole file from the start.
 4. **Frontend parses every event again:** `JSON.parse`, three regexes in `normalizeIncoming`, another in `extractMessage` at render time.
 5. **`LogViewer.tsx`: `[...linesRef.current, ...bufferRef.current].slice(-maxLines)` every 50 ms** copies the whole array on each flush (quadratic over a long stream).
 6. **Client-side search** scans only the lines already in the browser, in JS.
-7. **`filter.rs`** expects the entire log text in the JSON request body (unused, but unusable at scale; can be removed).
+7. ~~**`filter.rs`** expects the entire log text in the JSON request body.~~ Removed.
 
 Correctness bugs (worth fixing regardless):
 
@@ -191,7 +191,6 @@ Correctness bugs (worth fixing regardless):
 12. **Keyword filter is case-sensitive and only checks the message part**, not the whole line.
 13. **Time delta is wrong under virtualization:** `prevTs` is a variable in the render function, so the delta is relative to the previously *rendered* row, not the previous log line.
 14. **No end-of-results signal:** after the file ends, the stream switches to heartbeats forever, so the UI can't show "done" and the spinner logic can't tell an empty result from a slow one.
-15. **Security (web mode only):** binds `0.0.0.0` with CORS `Any`, so anyone on the network can upload files and read others' sessions by ID. Uploaded files are only deleted if the unload beacon arrives (one is still sitting in `backend/uploads/`). Moot for the desktop app, relevant if you keep the server.
 
 ---
 
@@ -214,5 +213,5 @@ Phase 1 is the riskiest and most valuable; I'd prototype the index + viewport on
 2. Do teammates have their own copy of each log, or open it from a shared drive or server?
 3. Is there somewhere to host a small sync service (internal server, VM, container)?
 4. Only this one log format (`[ts] [LEVEL] [domain] message`), or should formats be configurable?
-5. Do you need to keep the browser version, or can desktop replace it?
+5. ~~Do you need to keep the browser version?~~ No: desktop only (2026-11-20).
 6. Are the logs static once you open them, or still being written (needs tail mode)?

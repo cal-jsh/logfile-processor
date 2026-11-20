@@ -1,12 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { OpenAPI } from "../openapi/client/core/OpenAPI";
-import { request as __request } from "../openapi/client/core/request";
-import type { LogSummary } from "../openapi/client/models/LogSummary";
+import type { LogSummary } from "./lib/logSummary";
 import { Dashboard } from "./pages/Dashboard";
 import {
     getApiBase,
     initialFile,
-    isDesktop,
     openLogDialog,
     openLogPath,
     type OpenedLog,
@@ -14,7 +11,6 @@ import {
 
 // shadcn/ui components
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
 import { Spinner } from "@/components/ui/spinner"
 import {
     Item,
@@ -35,13 +31,10 @@ export default function App() {
     const current = useRef<{ baseUrl: string | null; sessionId: string | null }>({ baseUrl: null, sessionId: null });
     current.current = { baseUrl, sessionId };
 
-    // Web: the standalone backend. Desktop: the in-process API on a random port.
+    // The in-process API on a random localhost port
     useEffect(() => {
         getApiBase()
-            .then((base) => {
-                OpenAPI.BASE = base;
-                setBaseUrl(base);
-            })
+            .then(setBaseUrl)
             .catch((e) => setError(`Backend not available: ${e}`));
     }, []);
 
@@ -54,35 +47,11 @@ export default function App() {
         }
         setSessionId(opened.session_id);
         setSummary(opened.summary);
-        setFilePath(opened.path ?? null);
+        setFilePath(opened.path);
         setError(null);
     };
 
-    /* ---------------- Web: upload ---------------- */
-    const handleUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
-        const file = event.target.files?.[0];
-        if (!file) return;
-
-        const formData = new FormData();
-        formData.append("file", file);
-
-        setBusy(true);
-        try {
-            const response = await __request(OpenAPI, {
-                method: "POST",
-                url: "/upload",
-                body: formData,
-            });
-            showOpened({ ...(response as OpenedLog), path: file.name });
-        } catch (err: any) {
-            setError("Upload failed");
-            console.error(err);
-        } finally {
-            setBusy(false);
-        }
-    };
-
-    /* ---------------- Desktop: open in place by path ---------------- */
+    /* ---------------- Open in place by path ---------------- */
     const openWith = useCallback(async (open: () => Promise<OpenedLog | null>) => {
         setBusy(true);
         try {
@@ -100,7 +69,6 @@ export default function App() {
 
     // A file passed on the command line, or dropped onto the exe icon
     useEffect(() => {
-        if (!isDesktop) return;
         initialFile()
             .then((p) => {
                 if (p) openWith(() => openLogPath(p));
@@ -110,7 +78,6 @@ export default function App() {
 
     // Drag and drop a file onto the window, also while one is open (it is replaced)
     useEffect(() => {
-        if (!isDesktop) return;
         let unlisten: (() => void) | undefined;
         let cancelled = false;
         import("@tauri-apps/api/webview").then(({ getCurrentWebview }) =>
@@ -166,27 +133,21 @@ export default function App() {
         >
             <Item variant="outline">
                 <ItemContent>
-                    <ItemTitle>{isDesktop ? "Open a log file" : "Logfile Upload"}</ItemTitle>
+                    <ItemTitle>Open a log file</ItemTitle>
                     <ItemDescription>
-                        {isDesktop
-                            ? "Choose a local log file, or drop it on this window. It is read in place, not copied."
-                            : "Please select the logfile you wish to analyze."}
+                        Choose a local log file, or drop it on this window. It is read in place, not copied.
                     </ItemDescription>
                 </ItemContent>
                 <ItemActions>
-                    {isDesktop ? (
-                        <Button disabled={busy || !baseUrl} onClick={() => openWith(openLogDialog)}>
-                            Open file…
-                        </Button>
-                    ) : (
-                        <Input id="logfile-upload" type="file" accept=".txt,.log" onChange={handleUpload} disabled={busy || !baseUrl} className="cursor-pointer border hover:bg-gray-100 transition-colors" />
-                    )}
+                    <Button disabled={busy || !baseUrl} onClick={() => openWith(openLogDialog)}>
+                        Open file…
+                    </Button>
                 </ItemActions>
             </Item>
 
             {busy && (
                 <p className="flex items-center gap-2 text-sm text-muted-foreground">
-                    <Spinner /> {isDesktop ? "Indexing…" : "Uploading and indexing…"}
+                    <Spinner /> Indexing…
                 </p>
             )}
             {error && <p style={{ color: "red" }}>{error}</p>}

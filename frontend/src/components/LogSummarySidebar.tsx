@@ -1,4 +1,4 @@
-import type { LogSummary } from "../../openapi/client/models/LogSummary";
+import type { LogSummary } from "../lib/logSummary";
 import {
   Sidebar,
   SidebarContent,

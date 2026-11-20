@@ -4,7 +4,7 @@ import { Button } from "./ui/button";
 import { colorMap } from "../lib/colorMap";
 import { Spinner } from "./ui/spinner";
 import { Download, Hash, Search } from "lucide-react";
-import { exportView, isDesktop } from "../lib/platform";
+import { exportView } from "../lib/platform";
 import { FloatingPanel } from "./FloatingPanel";
 import { Minimap, parseLogTime, type MinimapAxis, type VisibleRange } from "./Minimap";
 
@@ -455,31 +455,25 @@ export const LogViewer = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchOpen]);
 
-  /* ---------------- Downloads (streamed by the backend) ---------------- */
+  /* ---------------- Export (written by Rust after a native Save dialog) ---------------- */
   const [exportMsg, setExportMsg] = useState<string | null>(null);
   const download = async (format: "txt" | "csv") => {
-    if (isDesktop) {
-      // The webview can't download from the API: save through a native dialog.
-      const p = new URLSearchParams(filterParams);
-      setExportMsg("Exporting…");
-      try {
-        const saved = await exportView({
-          sessionId,
-          levels: p.get("levels"),
-          domains: p.get("domains"),
-          keywords: p.get("keywords"),
-          context,
-          format,
-        });
-        setExportMsg(saved ? `Saved to ${saved}` : null);
-      } catch (e) {
-        setExportMsg(`Export failed: ${e}`);
-      }
-      return;
+    // An <a href> download would navigate the whole webview away
+    const p = new URLSearchParams(filterParams);
+    setExportMsg("Exporting…");
+    try {
+      const saved = await exportView({
+        sessionId,
+        levels: p.get("levels"),
+        domains: p.get("domains"),
+        keywords: p.get("keywords"),
+        context,
+        format,
+      });
+      setExportMsg(saved ? `Saved to ${saved}` : null);
+    } catch (e) {
+      setExportMsg(`Export failed: ${e}`);
     }
-    const a = document.createElement("a");
-    a.href = `${baseUrl}/view/export?${viewParams}&format=${format}`;
-    a.click();
   };
 
   /* ---------------- Render ---------------- */
