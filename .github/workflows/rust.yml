@@ -78,10 +78,9 @@ jobs:
             backend -> target
             frontend/src-tauri -> target
 
-      # --legacy-peer-deps: vite 8 vs the peer range of @tailwindcss/vite
       - name: Install frontend dependencies
         working-directory: frontend
-        run: npm ci --legacy-peer-deps
+        run: npm ci
 
       # tsconfig.json has "files": [] (it only carries the @/ path alias), so a plain
       # `tsc` checks nothing. Check src/ through a throwaway config instead.
@@ -163,7 +162,7 @@ jobs:
 
       - name: Install frontend dependencies
         working-directory: frontend
-        run: npm ci --legacy-peer-deps
+        run: npm ci
 
       # Delete this step (here and in release-linux) to switch signing off again.
       - name: Updater signing (only if key and public key are configured)
@@ -237,7 +236,7 @@ jobs:
 
       - name: Install frontend dependencies
         working-directory: frontend
-        run: npm ci --legacy-peer-deps
+        run: npm ci
 
       - name: Updater signing (only if key and public key are configured)
         env:

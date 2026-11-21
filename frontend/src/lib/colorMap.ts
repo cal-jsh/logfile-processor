@@ -1,4 +1,4 @@
-export const LEVEL_ORDER = ["TRACE", "DEBUG", "INFO", "WARN", "ERROR"] as const;
+export const LEVEL_ORDER = ["TRACE", "DEBUG", "INFO", "WARN", "ERROR", "CRITICAL"] as const;
 
 export const colorMap: Record<string, string> = {
   TRACE: "#888",
@@ -6,15 +6,19 @@ export const colorMap: Record<string, string> = {
   INFO: "#8cc644ff",
   WARN: "orange",
   ERROR: "red",
+  CRITICAL: "#e040fb",
 };
 
 export type LogLevel = (typeof LEVEL_ORDER)[number];
 
 /** The known level a level name stands for, like the backend's `level_code`: spdlog's
-    "info", "warning", "critical" and one-letter names map to the five known levels. */
+    "info", "warning", "critical" and one-letter names map to the six known levels.
+    CRITICAL (and FATAL) is its own level above ERROR, as in the level filter. */
 export function canonicalLevel(name: string | undefined | null): LogLevel | null {
   switch ((name ?? "").trim().toUpperCase()) {
-    case "ERROR": case "ERR": case "FATAL": case "CRITICAL": case "CRIT": case "SEVERE": case "E": case "C": case "F":
+    case "CRITICAL": case "CRIT": case "FATAL": case "C": case "F":
+      return "CRITICAL";
+    case "ERROR": case "ERR": case "SEVERE": case "E":
       return "ERROR";
     case "WARN": case "WARNING": case "W":
       return "WARN";

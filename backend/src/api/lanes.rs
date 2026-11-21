@@ -4,9 +4,9 @@
 //! `GET /lanes?session_id=..&field=thread&buckets=N[&from_ms=..&to_ms=..][&filter]`
 //! returns the lanes (see [`crate::logfile::lanes`]) and, per lane, strings of `N` digits
 //! (see [`Encoded`]): `levels` the level with the most lines in each column (`0` no line,
-//! then as the minimap: `1` other, `2` TRACE .. `6` ERROR), `alerts` an ERROR or WARN that
-//! is there but does not dominate, and `density` how many lines the column holds, `1..=9`
-//! on a log scale relative to the busiest column (`0` none).
+//! then as the minimap: `1` other, `2` TRACE .. `7` CRITICAL), `alerts` a CRITICAL, ERROR
+//! or WARN that is there but does not dominate, and `density` how many lines the column
+//! holds, `1..=9` on a log scale relative to the busiest column (`0` none).
 //!
 //! Unlike the minimap, the colour is the dominant level, not the most severe one: over
 //! days almost every thread logs an error every few minutes, and the most severe level
