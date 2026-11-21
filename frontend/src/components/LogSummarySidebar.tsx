@@ -35,7 +35,7 @@ import { useEffect, useState } from "react";
 import BugReportDialog from "./BugReportDialog";
 import CliHelpDialog from "./CliHelpDialog";
 import UpdateDialog from "./UpdateDialog";
-import { backgroundCheck, type Update } from "../lib/updater";
+import { backgroundCheck, currentVersion, type Update } from "../lib/updater";
 import FormatDialog from "./FormatDialog";
 
 interface Props {
@@ -172,9 +172,14 @@ export default function LogSummarySidebar({
   const [updateOpen, setUpdateOpen] = useState(false);
   // A newer release found by the quiet check at start (or by the dialog), for the button
   const [pendingUpdate, setPendingUpdate] = useState<Update | null>(null);
+  const [appVersion, setAppVersion] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
     backgroundCheck().then((u) => !cancelled && setPendingUpdate(u));
+    currentVersion().then(
+      (v) => !cancelled && setAppVersion(v),
+      () => {}
+    );
     return () => {
       cancelled = true;
     };
@@ -521,22 +526,58 @@ export default function LogSummarySidebar({
             </SidebarMenuButton>
           </SidebarMenuItem>
           <SidebarMenuItem>
-            <SidebarMenuButton
-              tooltip={pendingUpdate ? `Update to ${pendingUpdate.version}` : "Check for updates"}
-              onClick={() => setUpdateOpen(true)}
-              className={pendingUpdate ? "text-primary" : "text-muted-foreground"}
-            >
-              <span className="relative shrink-0">
-                <CircleArrowUp className="size-4" />
-                {pendingUpdate && (
+            {pendingUpdate ? (
+              <SidebarMenuButton
+                aria-label={`Update available: version ${pendingUpdate.version}`}
+                // Shown in both sidebar states (the default hides it while expanded)
+                tooltip={{
+                  hidden: false,
+                  className: "max-w-60",
+                  children: (
+                    <div className="space-y-0.5 py-0.5">
+                      <div className="font-medium">
+                        Version <span className="font-mono">{pendingUpdate.version}</span> is available
+                      </div>
+                      <div className="opacity-70">
+                        {appVersion ? (
+                          <>
+                            You have <span className="font-mono">{appVersion}</span>.{" "}
+                          </>
+                        ) : null}
+                        Click to read what's new and install it.
+                      </div>
+                    </div>
+                  ),
+                }}
+                onClick={() => setUpdateOpen(true)}
+                className="bg-update/10 font-medium text-update hover:bg-update/15 hover:text-update active:bg-update/20 active:text-update"
+              >
+                <span className="relative grid shrink-0 place-items-center">
                   <span
                     aria-hidden
-                    className="absolute -top-0.5 -right-0.5 size-2 rounded-full bg-primary ring-2 ring-sidebar"
+                    className="absolute inset-0 rounded-full bg-update motion-safe:animate-update-halo motion-reduce:hidden opacity-0"
                   />
-                )}
-              </span>
-              <span>{pendingUpdate ? `Update to ${pendingUpdate.version}` : "Update"}</span>
-            </SidebarMenuButton>
+                  <CircleArrowUp className="relative size-4" />
+                  <span
+                    aria-hidden
+                    className="absolute -top-0.5 -right-0.5 size-2 rounded-full bg-update ring-2 ring-sidebar"
+                  />
+                </span>
+                <span>Update available</span>
+                <span className="ml-auto rounded-full bg-update px-1.5 py-px font-mono text-[10px] leading-4 text-update-foreground">
+                  {pendingUpdate.version}
+                </span>
+              </SidebarMenuButton>
+            ) : (
+              <SidebarMenuButton
+                tooltip="Check for updates"
+                onClick={() => setUpdateOpen(true)}
+                className="text-muted-foreground"
+              >
+                <CircleArrowUp />
+                <span>Update</span>
+              </SidebarMenuButton>
+            )}
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarFooter>
