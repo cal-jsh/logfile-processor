@@ -3,6 +3,7 @@ import { colorMap, groupColors, NO_LEVEL_COLOR, OTHER_GROUP_COLOR } from "../lib
 import { useTheme } from "../lib/theme";
 import { RangeShade, rangeCursor, useTimeRangeDrag, type TimeRange } from "./TimeRangeSelect";
 import { IndexingSweep } from "./IndexingSweep";
+import { END_W, LABEL_W } from "./plotColumns";
 
 /*
  * Horizontal minimap of the whole file: one vertical line per pixel column, colored by
@@ -26,6 +27,12 @@ import { IndexingSweep } from "./IndexingSweep";
  * the field's group (value up to the first dot) with the most lines per column; the
  * backend gives the 12 largest groups a code each and folds the rest into "other". A
  * legend below the bar names the colours.
+ *
+ * Zoomed thread lanes: their time window is marked on the time axis (a dashed box on the
+ * bar, a bracket on the scale), so the lanes' place in the file stays visible.
+ *
+ * Layout: a name column on the left and a scrollbar-wide column on the right, the same as
+ * the thread lanes (plotColumns.ts), so the two plots share their left and right edges.
  */
 
 export type MinimapAxis = "line" | "time";
@@ -170,6 +177,7 @@ export function Minimap({
   onJumpToLine,
   timeRange,
   onTimeRangeChange,
+  lanesWindow,
 }: {
   baseUrl: string;
   sessionId: string;
@@ -183,6 +191,8 @@ export function Minimap({
   /** The time range filter, if any */
   timeRange: TimeRange | null;
   onTimeRangeChange: (r: TimeRange | null) => void;
+  /** The thread lanes' zoomed time window, marked on the time axis (null: not zoomed) */
+  lanesWindow?: TimeRange | null;
 }) {
   const barRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -382,105 +392,141 @@ export function Minimap({
     }
   }
 
+  // the thread lanes' zoomed window (time axis), at least 3 px wide like the box
+  let lanesBox: { left: number; width: number } | null = null;
+  if (lanesWindow && timeAxis && t1 > t0 && cssWidth) {
+    const a = Math.max(0, (lanesWindow.from - t0) / (t1 - t0));
+    const b = Math.min(1, (lanesWindow.to - t0) / (t1 - t0));
+    if (b >= a) {
+      const width = Math.max(3, (b - a) * cssWidth);
+      lanesBox = { left: Math.min(a * cssWidth, cssWidth - width), width };
+    }
+  }
+
   const ticks = timeAxis ? timeTicks(t0, t1, cssWidth) : [];
 
   return (
     <div className="shrink-0 select-none border-b border-log-ink/10 bg-log-panel">
       {/* time scale */}
       {axis === "time" && (
-        <div
-          className="relative touch-none overflow-hidden border-b border-log-ink/5"
-          style={{ height: AXIS_HEIGHT }}
-          onPointerDown={onScaleDown}
-          onPointerMove={onScaleMove}
-          onPointerUp={onScaleUp}
-          onPointerCancel={range.cancel}
-          onPointerLeave={() => setHover(null)}
-          onDoubleClick={() => timeRange && onTimeRangeChange(null)}
-          title={canSelect ? (timeRange ? "Drag the edges or the range to change it · double-click to clear it" : "Drag to filter a time range") : undefined}
-        >
-          {ticks.map(({ t, label }) => {
-            const x = ((t - t0) / (t1 - t0)) * cssWidth;
-            // no label that would be cut at the right edge
-            if (x > cssWidth - (label.length * 6 + 8)) return null;
-            return (
-              <div key={t} className="absolute top-0 h-full" style={{ left: x }}>
-                <div className="absolute bottom-0 h-1 w-px bg-log-ink/30" />
-                <div data-tick className="absolute left-1 top-0 whitespace-nowrap font-mono text-[10px] leading-[14px] text-log-fg/55">
-                  {label}
+        <div className="flex border-b border-log-ink/5" style={{ height: AXIS_HEIGHT }}>
+          <div className="shrink-0 border-r border-log-ink/5" style={{ width: LABEL_W }} />
+          <div
+            className="relative min-w-0 flex-1 touch-none overflow-hidden"
+            onPointerDown={onScaleDown}
+            onPointerMove={onScaleMove}
+            onPointerUp={onScaleUp}
+            onPointerCancel={range.cancel}
+            onPointerLeave={() => setHover(null)}
+            onDoubleClick={() => timeRange && onTimeRangeChange(null)}
+            title={canSelect ? (timeRange ? "Drag the edges or the range to change it · double-click to clear it" : "Drag to filter a time range") : undefined}
+          >
+            {ticks.map(({ t, label }) => {
+              const x = ((t - t0) / (t1 - t0)) * cssWidth;
+              // no label that would be cut at the right edge
+              if (x > cssWidth - (label.length * 6 + 8)) return null;
+              return (
+                <div key={t} className="absolute top-0 h-full" style={{ left: x }}>
+                  <div className="absolute bottom-0 h-1 w-px bg-log-ink/30" />
+                  <div data-tick className="absolute left-1 top-0 whitespace-nowrap font-mono text-[10px] leading-[14px] text-log-fg/55">
+                    {label}
+                  </div>
                 </div>
-              </div>
-            );
-          })}
-          {data && !timeAxis && (
-            <div className="px-3 text-[10px] leading-[16px] text-log-fg/50">No timestamps found in this file</div>
-          )}
-          {shownRange && <RangeShade range={shownRange} vf={t0} vt={t1} width={cssWidth} grips label draft={!!range.draft} />}
-          {hover && canSelect && <div className="pointer-events-none absolute inset-y-0 w-px bg-log-ink/40" style={{ left: hover.x }} />}
+              );
+            })}
+            {data && !timeAxis && (
+              <div className="px-3 text-[10px] leading-[16px] text-log-fg/50">No timestamps found in this file</div>
+            )}
+            {lanesBox && (
+              <div className="lanes-window pointer-events-none absolute bottom-0 h-[3px] rounded-t-[1px]" style={{ left: lanesBox.left, width: lanesBox.width }} />
+            )}
+            {shownRange && <RangeShade range={shownRange} vf={t0} vt={t1} width={cssWidth} grips label draft={!!range.draft} />}
+            {hover && canSelect && <div className="pointer-events-none absolute inset-y-0 w-px bg-log-ink/40" style={{ left: hover.x }} />}
+          </div>
+          <div className="shrink-0" style={{ width: END_W }} />
         </div>
       )}
 
-      <div
-        ref={barRef}
-        className="relative cursor-pointer touch-none"
-        style={{ height: HEIGHT }}
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onPointerCancel={() => {
-          dragging.current = false;
-          range.cancel();
-        }}
-        onPointerLeave={() => setHover(null)}
-        onDoubleClick={() => timeRange && onTimeRangeChange(null)}
-        title={canSelect ? (timeRange ? "Click to jump · drag to select another time range · double-click to clear it" : "Click to jump · drag to filter a time range") : undefined}
-        role="slider"
-        aria-label={`Minimap by ${axis}: ${color === "level" ? "log levels" : color} across the file, click to jump`}
-        aria-valuemin={1}
-        aria-valuemax={lineCount || 1}
-        aria-valuenow={visible?.first ?? 1}
-      >
-        <canvas ref={canvasRef} className="absolute inset-0 h-full w-full" style={{ imageRendering: "pixelated" }} />
-        {/* first load: the file is still being indexed; the bar stays neutral until then */}
-        {!fetched && (loading || !pxWidth) && (
-          <div className="pointer-events-none absolute inset-0 overflow-hidden">
-            <IndexingSweep />
-            <div className="absolute inset-y-0 left-3 flex items-center font-mono text-[10px] text-log-fg/45">Indexing…</div>
-          </div>
-        )}
-
-        {shownRange && <RangeShade range={shownRange} vf={t0} vt={t1} width={cssWidth} draft={!!range.draft} dim={0.25} />}
-
-        {box && (
-          <div
-            className="pointer-events-none absolute inset-y-0 z-[6] rounded-[2px] border border-log-ink/80 bg-log-ink/10 shadow-[0_0_0_1px_color-mix(in_srgb,var(--range-outside)_60%,transparent)]"
-            style={{ left: box.left, width: box.width }}
-          />
-        )}
-
-        {hover && (
-          <>
-            <div className="pointer-events-none absolute inset-y-0 z-[6] w-px bg-log-ink/70" style={{ left: hover.x }} />
-            <div
-              className="pointer-events-none absolute top-1/2 z-10 -translate-y-1/2 whitespace-nowrap rounded bg-log-tip/85 px-1.5 py-0.5 font-mono text-[10px] text-white shadow"
-              style={hover.x > cssWidth - 260 ? { right: cssWidth - hover.x + 6 } : { left: hover.x + 6 }}
-            >
-              {hover.time != null && <span className="mr-1.5 text-white/75">{formatFull(hover.time)}</span>}
-              {hover.line != null ? `Line ${hover.line.toLocaleString()}` : "No log lines"}
-              {hover.line != null && hover.label && (
-                <span className="ml-1.5 font-semibold" style={{ color: hover.labelColor }}>
-                  {hover.label}
-                </span>
-              )}
+      <div className="flex" style={{ height: HEIGHT }}>
+        <div
+          className="flex shrink-0 items-center truncate border-r border-log-ink/5 px-2 text-[10px] text-log-fg/60"
+          style={{ width: LABEL_W }}
+          title={`Minimap: ${color === "level" ? "log levels" : color} by ${axis}`}
+        >
+          <span className="truncate">
+            {color === "level" ? "Levels" : color} by {axis}
+          </span>
+        </div>
+        <div
+          ref={barRef}
+          className="relative min-w-0 flex-1 cursor-pointer touch-none"
+          onPointerDown={onPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerUp={onPointerUp}
+          onPointerCancel={() => {
+            dragging.current = false;
+            range.cancel();
+          }}
+          onPointerLeave={() => setHover(null)}
+          onDoubleClick={() => timeRange && onTimeRangeChange(null)}
+          title={canSelect ? (timeRange ? "Click to jump · drag to select another time range · double-click to clear it" : "Click to jump · drag to filter a time range") : undefined}
+          role="slider"
+          aria-label={`Minimap by ${axis}: ${color === "level" ? "log levels" : color} across the file, click to jump`}
+          aria-valuemin={1}
+          aria-valuemax={lineCount || 1}
+          aria-valuenow={visible?.first ?? 1}
+        >
+          <canvas ref={canvasRef} className="absolute inset-0 h-full w-full" style={{ imageRendering: "pixelated" }} />
+          {/* first load: the file is still being indexed; the bar stays neutral until then
+              (the one status text is below, with the other states) */}
+          {!fetched && (loading || !pxWidth) && (
+            <div className="pointer-events-none absolute inset-0 overflow-hidden">
+              <IndexingSweep />
             </div>
-          </>
-        )}
+          )}
 
-        {!data && (
-          <div className="pointer-events-none absolute inset-0 flex items-center px-3 text-[11px] text-log-fg/50">
-            {loading ? "Building minimap…" : ""}
-          </div>
-        )}
+          {shownRange && <RangeShade range={shownRange} vf={t0} vt={t1} width={cssWidth} draft={!!range.draft} dim={0.25} />}
+
+          {lanesBox && (
+            <div
+              className="lanes-window-box pointer-events-none absolute inset-y-0 z-[5]"
+              style={{ left: lanesBox.left, width: lanesBox.width }}
+              aria-hidden
+            />
+          )}
+
+          {box && (
+            <div
+              className="pointer-events-none absolute inset-y-0 z-[6] rounded-[2px] border border-log-ink/80 bg-log-ink/10 shadow-[0_0_0_1px_color-mix(in_srgb,var(--range-outside)_60%,transparent)]"
+              style={{ left: box.left, width: box.width }}
+            />
+          )}
+
+          {hover && (
+            <>
+              <div className="pointer-events-none absolute inset-y-0 z-[6] w-px bg-log-ink/70" style={{ left: hover.x }} />
+              <div
+                className="pointer-events-none absolute top-1/2 z-10 -translate-y-1/2 whitespace-nowrap rounded bg-log-tip/85 px-1.5 py-0.5 font-mono text-[10px] text-white shadow"
+                style={hover.x > cssWidth - 260 ? { right: cssWidth - hover.x + 6 } : { left: hover.x + 6 }}
+              >
+                {hover.time != null && <span className="mr-1.5 text-white/75">{formatFull(hover.time)}</span>}
+                {hover.line != null ? `Line ${hover.line.toLocaleString()}` : "No log lines"}
+                {hover.line != null && hover.label && (
+                  <span className="ml-1.5 font-semibold" style={{ color: hover.labelColor }}>
+                    {hover.label}
+                  </span>
+                )}
+              </div>
+            </>
+          )}
+
+          {!data && (
+            <div className="pointer-events-none absolute inset-0 flex items-center px-3 text-[11px] text-log-fg/50">
+              {!fetched && (loading || !pxWidth) ? "Indexing…" : loading ? "Building minimap…" : ""}
+            </div>
+          )}
+        </div>
+        <div className="shrink-0" style={{ width: END_W }} />
       </div>
 
       {data?.categories && legend && (

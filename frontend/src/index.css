@@ -231,3 +231,43 @@ mark.mark-search {
 .term-regex {
   background: color-mix(in oklab, var(--update) 16%, var(--secondary));
 }
+
+/* The thread lanes' vertical scrollbar: always there (stable gutter) and exactly as wide
+   as the log's scrollbar (12 px, plotColumns.ts END_W), so the lanes' plot ends where
+   the minimap's does. Styled like the log's scrollbar. */
+.lanes-scroll {
+  scrollbar-gutter: stable;
+}
+.lanes-scroll::-webkit-scrollbar {
+  width: 12px;
+}
+.lanes-scroll::-webkit-scrollbar-track {
+  background: color-mix(in srgb, var(--log-ink) 5%, transparent);
+}
+.lanes-scroll::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--log-ink) 40%, transparent);
+  border-radius: 4px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+.lanes-scroll::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in srgb, var(--log-ink) 60%, transparent);
+}
+
+/* The thread lanes' zoomed window on the minimap (Minimap.tsx): a dashed box on the bar
+   and a bracket on the time scale, in a blue that is neither a log level nor the time
+   range's paper tint nor the viewport box's ink. */
+:root {
+  --lanes-window: #2b7bb9;
+}
+.log-dark {
+  --lanes-window: #5fb3f0;
+}
+.lanes-window {
+  background: var(--lanes-window);
+}
+.lanes-window-box {
+  border: 1.5px dashed var(--lanes-window);
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--lanes-window) 14%, transparent);
+}
