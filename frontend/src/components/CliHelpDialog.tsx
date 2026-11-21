@@ -68,7 +68,7 @@ export default function CliHelpDialog({ open, onOpenChange }: Props) {
             className="min-w-0 flex-1 truncate font-mono select-text"
             title={help?.cli_path ?? undefined}
           >
-            {help ? (help.cli_path ?? "logfile_processor_cli.exe was not found next to this app") : "…"}
+            {help ? (help.cli_path ?? "logfile_processor_cli was not found next to this app") : "…"}
           </code>
           <CopyButton text={help?.cli_path ?? null} label="Copy the program path" />
         </div>

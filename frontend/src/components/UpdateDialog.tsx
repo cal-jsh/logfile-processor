@@ -72,6 +72,7 @@ export default function UpdateDialog({ open, onOpenChange, onChecked }: Props) {
       );
       setState({ step: "installing", update });
       // Windows: the app exits here and the installer starts the new version.
+      // Linux: the AppImage is replaced or the .deb installed, then the app restarts.
       await installUpdate(update);
     } catch (e) {
       setState({ step: "error", message: describeUpdateError(e), update });

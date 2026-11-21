@@ -1,22 +1,30 @@
-# CI for the desktop app (Tauri 2, Windows only).
+# CI for the desktop app (Tauri 2, Windows and Linux).
 #
 #   backend/              library crate `logfile_processor` (index, filters, viewport API)
 #   frontend/             React + Vite UI
 #   frontend/src-tauri/   desktop shell: `logfile_processor_desktop` (viewer, GUI exe)
-#                         and `logfile_processor_cli` (console companion exe)
+#                         and `logfile_processor_cli` (console companion)
 #
 # Every push to main and every pull request: type-check and build the UI, run the
-# tests of both crates.
+# tests of both crates, on Windows and on Linux.
 #
 # A pushed version tag (v1.2.3) additionally builds the release and puts it on a
-# draft GitHub release: NSIS installer, MSI installer and logfile_processor_cli.exe.
+# draft GitHub release:
+#   Windows: NSIS installer, MSI installer and logfile_processor_cli.exe
+#   Linux:   .deb package, .AppImage and logfile_processor_cli-linux-x86_64.tar.gz
 # Publish the draft by hand once it looks right.
 #
-# Updater artifacts (signed installer + latest.json for the in-app "Update" button)
-# are only produced when the secret TAURI_SIGNING_PRIVATE_KEY exists (see the
-# "Updater signing" step). The matching public key is committed in tauri.conf.json
-# (plugins.updater). Without the secret the release is built exactly the same, just
-# without updater files, and installed apps are not offered it.
+# Updater artifacts (signed bundles + latest.json for the in-app "Update" button)
+# are only produced when the secret TAURI_SIGNING_PRIVATE_KEY exists (see
+# .github/scripts/updater-signing.sh). The matching public key is committed in
+# tauri.conf.json (plugins.updater). Without the secret the release is built exactly
+# the same, just without updater files, and installed apps are not offered it.
+#
+# The Linux release job runs after the Windows one and adds to the same draft
+# release. tauri-action reads the latest.json already on the release and adds its own
+# platforms to it, so the file ends up with windows-x86_64 (-nsis, -msi) and
+# linux-x86_64 (-appimage, -deb). If the two jobs ran at the same time, the one that
+# finishes last could replace the other's entries.
 
 name: CI
 
@@ -34,13 +42,27 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # System libraries of Tauri on Linux (WebKitGTK webview, tray, icons, AppImage tools)
+  LINUX_DEPS: >-
+    libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+    libssl-dev libxdo-dev build-essential file
 
 jobs:
   test:
-    name: Build & test
-    runs-on: windows-latest
+    name: Build & test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-22.04]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y $LINUX_DEPS
 
       - uses: actions/setup-node@v4
         with:
@@ -101,13 +123,15 @@ jobs:
         working-directory: frontend/src-tauri
         run: cargo test --locked
 
-  release:
-    name: Release
+  release-windows:
+    name: Release (Windows)
     needs: test
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: windows-latest
     permissions:
       contents: write
+    outputs:
+      release_id: ${{ steps.tauri.outputs.releaseId }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}       # gh release upload
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # tauri-action creates the release
@@ -141,17 +165,7 @@ jobs:
         working-directory: frontend
         run: npm ci --legacy-peer-deps
 
-      # ---- Updater signing (optional) -------------------------------------------
-      # Needs the secret TAURI_SIGNING_PRIVATE_KEY (+ _PASSWORD). The public key and
-      # the latest.json endpoint are committed in tauri.conf.json (plugins.updater);
-      # the repository variable TAURI_UPDATER_PUBKEY is only a fallback for a config
-      # without that section, and a warning shows if the two differ.
-      # Then, in the CI checkout only: turn on bundle.createUpdaterArtifacts (not
-      # committed, because a local `tauri build` without the private key would fail)
-      # and hand the key to the build, so tauri signs the installers (.sig files) and
-      # tauri-action adds latest.json to the release.
-      # If anything is missing this step changes nothing and the release simply has
-      # no updater files. Delete this step to switch signing off again.
+      # Delete this step (here and in release-linux) to switch signing off again.
       - name: Updater signing (only if key and public key are configured)
         shell: bash
         env:
@@ -159,61 +173,23 @@ jobs:
           KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY }}
           ENDPOINT: https://github.com/${{ github.repository }}/releases/latest/download/latest.json
-        run: |
-          if [ -z "$KEY" ]; then
-            echo "::notice::TAURI_SIGNING_PRIVATE_KEY is not set: release built without updater artifacts (no .sig, no latest.json)."
-            exit 0
-          fi
-          conf=frontend/src-tauri/tauri.conf.json
-          has_updater=$(node -p "!!(require('./$conf').plugins || {}).updater")
-          if [ "$has_updater" != "true" ] && [ -z "$PUBKEY" ]; then
-            echo "::warning::TAURI_SIGNING_PRIVATE_KEY is set but the repository variable TAURI_UPDATER_PUBKEY is not (and tauri.conf.json has no plugins.updater): release built without updater artifacts."
-            exit 0
-          fi
-          if [ "$has_updater" = "true" ] && [ -n "$PUBKEY" ]; then
-            conf_pubkey=$(node -p "require('./$conf').plugins.updater.pubkey")
-            if [ "$conf_pubkey" != "$(echo "$PUBKEY" | tr -d '[:space:]')" ]; then
-              echo "::warning::The repository variable TAURI_UPDATER_PUBKEY differs from plugins.updater.pubkey in tauri.conf.json. The committed one is used; installed apps reject updates signed with a key that does not match it."
-            fi
-          fi
-          node -e "
-            const fs = require('fs');
-            const p = process.argv[1];
-            const c = JSON.parse(fs.readFileSync(p, 'utf8'));
-            c.bundle.createUpdaterArtifacts = true;
-            c.plugins = c.plugins || {};
-            if (!c.plugins.updater) {
-              c.plugins.updater = {
-                pubkey: process.env.PUBKEY.trim(),
-                endpoints: [process.env.ENDPOINT],
-              };
-            }
-            fs.writeFileSync(p, JSON.stringify(c, null, 2));
-          " "$conf"
-          {
-            echo "TAURI_SIGNING_PRIVATE_KEY<<__KEY_EOF__"
-            echo "$KEY"
-            echo "__KEY_EOF__"
-            # Empty when the key has no password; must still be set, or the build asks for one
-            echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD<<__PW_EOF__"
-            echo "$KEY_PASSWORD"
-            echo "__PW_EOF__"
-          } >> "$GITHUB_ENV"
-          echo "Updater signing key found: building signed updater artifacts."
-      # ---------------------------------------------------------------------------
+        run: bash .github/scripts/updater-signing.sh
 
       # Runs `npm run tauri build` in frontend/ (beforeBuildCommand builds the UI),
       # creates the draft release for this tag and uploads the NSIS + MSI installers
       # (plus .sig files and latest.json when signing is on).
       - name: Build installers and create draft release
+        id: tauri
         uses: tauri-apps/tauri-action@v0
         with:
           projectPath: frontend
+          args: --bundles nsis,msi
           tagName: ${{ github.ref_name }}
           releaseName: Logfile Processor ${{ github.ref_name }}
           releaseBody: |
-            Windows installers (NSIS `-setup.exe` or `.msi`) and the standalone command line tool `logfile_processor_cli.exe`.
-            The builds are not code-signed yet, so Windows SmartScreen warns on first start.
+            **Windows:** installer (NSIS `-setup.exe` or `.msi`) and the standalone command line tool `logfile_processor_cli.exe`. The builds are not code-signed yet, so Windows SmartScreen warns on first start.
+
+            **Linux (x86_64):** `.deb` for Debian and Ubuntu, or the `.AppImage` for any distribution (`chmod +x`, then run it). The command line tool is in `logfile_processor_cli-linux-x86_64.tar.gz`.
           releaseDraft: true
           prerelease: false
           includeUpdaterJson: true
@@ -226,3 +202,70 @@ jobs:
         run: |
           cargo build --release --locked --bin logfile_processor_cli
           gh release upload "${GITHUB_REF_NAME}" target/release/logfile_processor_cli.exe --clobber --repo "${GITHUB_REPOSITORY}"
+
+  # Built on the oldest supported Ubuntu runner: an AppImage only runs on systems
+  # with a glibc at least as new as the one it was built against, so 22.04 (glibc
+  # 2.35) covers current Debian, Ubuntu, Fedora, Mint and the like.
+  release-linux:
+    name: Release (Linux)
+    needs: release-windows
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y $LINUX_DEPS
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: frontend/src-tauri -> target
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci --legacy-peer-deps
+
+      - name: Updater signing (only if key and public key are configured)
+        env:
+          KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY }}
+          ENDPOINT: https://github.com/${{ github.repository }}/releases/latest/download/latest.json
+        run: bash .github/scripts/updater-signing.sh
+
+      # Adds the .deb and the .AppImage (plus their .sig files) to the draft release
+      # the Windows job created, and its Linux platforms to that release's latest.json.
+      # The in-app updater of an AppImage replaces the AppImage file; that of a .deb
+      # install downloads the new .deb and installs it with `pkexec dpkg -i` (asks
+      # for the password).
+      - name: Build .deb and .AppImage and add them to the draft release
+        uses: tauri-apps/tauri-action@v0
+        with:
+          projectPath: frontend
+          args: --bundles deb,appimage
+          releaseId: ${{ needs.release-windows.outputs.release_id }}
+          tagName: ${{ github.ref_name }}
+          includeUpdaterJson: true
+
+      # The .deb puts the CLI in /usr/bin next to the viewer, but the AppImage cannot
+      # be called that way, so attach it on its own, like on Windows.
+      - name: Attach logfile_processor_cli for Linux
+        working-directory: frontend/src-tauri
+        run: |
+          cargo build --release --locked --bin logfile_processor_cli
+          tar -czf logfile_processor_cli-linux-x86_64.tar.gz -C target/release logfile_processor_cli
+          gh release upload "${GITHUB_REF_NAME}" logfile_processor_cli-linux-x86_64.tar.gz --clobber --repo "${GITHUB_REPOSITORY}"

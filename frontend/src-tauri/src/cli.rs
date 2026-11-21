@@ -11,6 +11,11 @@
 //! the command line is meant for `logfile_processor_cli.exe` (`src/bin`), a console
 //! program that takes the same arguments and starts the viewer when there is nothing
 //! to filter.
+//!
+//! On Linux a desktop launcher or file manager ("Open with") starts the viewer with
+//! the files as arguments (`Exec=... %F` in `linux/logfile-processor.desktop`), and the viewer writes to the terminal it was started
+//! from, if any. With no terminal (stderr not a tty) errors go to the window, as
+//! with Explorer on Windows.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -18,7 +23,12 @@ use std::path::{Path, PathBuf};
 /// Name of the console companion, as typed in a terminal.
 pub const CLI_EXE: &str = "logfile_processor_cli";
 /// Name of the viewer exe next to it (as built by cargo, then as installed).
+#[cfg(windows)]
 pub const GUI_EXES: [&str; 2] = ["logfile_processor_desktop.exe", "Logfile Processor.exe"];
+/// Name of the viewer next to it (the .deb installs both under their cargo names in
+/// /usr/bin).
+#[cfg(not(windows))]
+pub const GUI_EXES: [&str; 1] = ["logfile_processor_desktop"];
 
 /// What the command line asks for.
 #[derive(Debug, PartialEq)]
@@ -251,9 +261,12 @@ pub fn attach_parent_console() -> bool {
     }
 }
 
+/// Elsewhere output goes wherever the process was started from; it counts as a
+/// terminal when stderr is one (a desktop launcher gives none or a log file).
 #[cfg(not(windows))]
 pub fn attach_parent_console() -> bool {
-    true
+    use std::io::IsTerminal;
+    std::io::stderr().is_terminal()
 }
 
 /// Stop child processes from inheriting our standard handles. Windows hands every
