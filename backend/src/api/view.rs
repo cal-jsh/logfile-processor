@@ -21,7 +21,8 @@ use crate::logfile::index::{display_text, LogFile};
 use crate::logfile::view::{MatchSet, View, ViewLines};
 use rayon::prelude::*;
 use crate::model::close_session_query::CloseSessionQuery;
-use crate::parsing::format::LogFormat;
+use crate::parsing::format::{LogFormat, Parsed};
+use crate::parsing::text_match::{compile_regex, compile_regex_ignore_case, TextMatcher};
 use crate::parsing::line_filter::LineFilter;
 
 use axum::{
@@ -53,6 +54,7 @@ pub fn router() -> Router {
         .route("/view/row_of_line", get(get_row_of_line))
         .route("/view/row_of_time", get(get_row_of_time))
         .route("/view/search", get(search_view))
+        .route("/regex/check", get(check_regex))
         .route("/close_session", post(close_session))
 }
 
@@ -66,6 +68,9 @@ pub struct ViewQuery {
     pub levels: Option<String>,
     /// Comma-separated keywords; a line matches if its message contains any of them
     pub keywords: Option<String>,
+    /// Regular expressions as a JSON list, e.g. `["code=5\d\d"]`; a line matches if its
+    /// message contains one of the keywords or matches one of these
+    pub regex: Option<String>,
     /// Time range: only lines with a timestamp from `time_from` (included) to `time_to`
     /// (excluded), ms since 1970 in the log's own clock; either end may be left open
     pub time_from: Option<f64>,
@@ -82,6 +87,8 @@ pub struct ViewQuery {
     pub line: Option<u64>,
     /// Search text (case-insensitive)
     pub q: Option<String>,
+    /// `q` is a regular expression (Rust `regex` syntax)
+    pub q_regex: Option<bool>,
     pub from_row: Option<u64>,
     /// `txt` (default) or `csv`
     pub format: Option<String>,
@@ -92,7 +99,7 @@ pub struct ViewQuery {
 
 impl ViewQuery {
     fn filter(&self) -> Result<LineFilter, ApiError> {
-        LineFilter::from_query(self.levels.as_deref(), self.fields.as_deref(), self.keywords.as_deref())
+        LineFilter::from_query(self.levels.as_deref(), self.fields.as_deref(), self.keywords.as_deref(), self.regex.as_deref())
             .and_then(|f| f.with_time_ms(self.time_from, self.time_to))
             .map_err(|e| ApiError(StatusCode::BAD_REQUEST, e))
     }
@@ -296,6 +303,95 @@ pub struct Row {
     /// Shown only as context around a match
     pub context: bool,
     pub truncated: bool,
+    /// Text to mark (see [`Mark`]); left out when there is none
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub marks: Vec<Mark>,
+}
+
+// ---------------------------------------------------------------- marks
+
+/// A piece of a row to mark: `(field, start, end, kind)`. `field` is the index of the
+/// format field the offsets are in, or -1 for the whole text (a line not in the
+/// format). Offsets count UTF-16 code units, as JavaScript string indices do. `kind`
+/// is 0 for the filter's keywords and regular expressions, 1 for the search panel's text.
+pub type Mark = (i32, u32, u32, u8);
+
+/// Most marks per row.
+const MAX_MARKS: usize = 200;
+
+/// What to mark in rows: the filter's keywords and regular expressions (in the message,
+/// where the filter looks; anywhere in lines not in the format) and the search text
+/// (`q`, anywhere in the line).
+pub struct Marker {
+    filter: Option<TextMatcher>,
+    search: Option<regex::Regex>,
+}
+
+impl Marker {
+    fn new(filter: &LineFilter, q: Option<&str>, q_regex: bool) -> Result<Self, ApiError> {
+        let bad = |e: String| ApiError(StatusCode::BAD_REQUEST, e);
+        let search = match q.filter(|q| !q.is_empty()) {
+            Some(q) => Some(search_regex(q, q_regex).map_err(bad)?),
+            None => None,
+        };
+        Ok(Self { filter: filter.text_matcher().map_err(bad)?, search })
+    }
+
+    fn marks(&self, format: &LogFormat, text: &str, parsed: Option<&Parsed>) -> Vec<Mark> {
+        let mut spans: Vec<(usize, usize, u8)> = Vec::new();
+        if let Some(m) = &self.filter {
+            let (base, msg) = match (parsed, format.message_field()) {
+                (Some(p), Some(f)) => {
+                    let v = p.get(text, f);
+                    (offset_in(text, v), v)
+                }
+                _ => (0, text),
+            };
+            spans.extend(m.spans(msg).into_iter().map(|(s, e)| (base + s, base + e, 0)));
+        }
+        if let Some(r) = &self.search {
+            spans.extend(r.find_iter(text).filter(|m| !m.is_empty()).take(MAX_MARKS).map(|m| (m.start(), m.end(), 1)));
+        }
+        if spans.is_empty() {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        let mut put = |field: i32, value: &str, base: usize| {
+            let end = base + value.len();
+            for &(s, e, kind) in &spans {
+                let (s, e) = (s.max(base), e.min(end));
+                if s < e && out.len() < MAX_MARKS {
+                    let u = |b: usize| value[..b - base].encode_utf16().count() as u32;
+                    out.push((field, u(s), u(e), kind));
+                }
+            }
+        };
+        match parsed {
+            None => put(-1, text, 0),
+            Some(p) => {
+                for i in 0..format.fields().len() {
+                    let v = p.get(text, i);
+                    put(i as i32, v, offset_in(text, v));
+                }
+            }
+        }
+        out
+    }
+}
+
+/// Byte offset of `part`, a slice of `whole`, in `whole`.
+fn offset_in(whole: &str, part: &str) -> usize {
+    part.as_ptr() as usize - whole.as_ptr() as usize
+}
+
+/// The search panel's regex: the text itself, or a regular expression with `regex`;
+/// case-insensitive either way.
+fn search_regex(q: &str, regex: bool) -> Result<regex::Regex, String> {
+    if regex {
+        compile_regex_ignore_case(q).map_err(|e| format!("Invalid regular expression: {e}"))
+    } else {
+        compile_regex_ignore_case(&regex::escape(q))
+    }
 }
 
 /// Fields and time of a line, for display.
@@ -316,12 +412,23 @@ pub struct RowsResponse {
     pub rows: Vec<Row>,
 }
 
-fn read_rows(file: &LogFile, format: &LogFormat, matches: &MatchSet, view: &View, first: u64, count: u64) -> Vec<Row> {
+fn read_rows(
+    file: &LogFile,
+    format: &LogFormat,
+    matches: &MatchSet,
+    view: &View,
+    first: u64,
+    count: u64,
+    marker: &Marker,
+) -> Vec<Row> {
     ViewLines::new(file, view, first, count)
         .map(|(row, l, bytes)| {
             let (text, truncated) = display_text(bytes, MAX_DISPLAY_BYTES);
-            let (fields, t) = split_for_display(format, &text);
-            Row { row, line_number: l + 1, text, fields, t, context: !matches.is_match(l), truncated }
+            let parsed = format.parse(&text);
+            let fields = parsed.map(|p| (0..format.fields().len()).map(|i| p.get(&text, i).to_string()).collect());
+            let t = parsed.and_then(|p| format.time_ns(&text, &p)).map(|ns| ns as f64 / 1e6);
+            let marks = marker.marks(format, &text, parsed.as_ref());
+            Row { row, line_number: l + 1, text, fields, t, context: !matches.is_match(l), truncated, marks }
         })
         .collect()
 }
@@ -329,19 +436,26 @@ fn read_rows(file: &LogFile, format: &LogFormat, matches: &MatchSet, view: &View
 /// Text of rows `first_row..first_row+count` of the view. With `partial=true` (see
 /// [`get_view`]), rows at the start of the file are read from its first index chunk
 /// while the file is still being indexed; later rows wait for the whole result.
+///
+/// Rows carry `marks` for the filter's keywords and regular expressions, and for the
+/// search text `q` (a regular expression with `q_regex=true`) if given.
 pub async fn get_view_rows(Query(q): Query<ViewQuery>) -> Result<Json<RowsResponse>, ApiError> {
     let first = q.first_row.unwrap_or(0);
     let count = q.count.unwrap_or(100).min(MAX_ROWS_PER_REQUEST);
+    let marker = Marker::new(&q.filter()?, q.q.as_deref(), q.q_regex.unwrap_or(false))?;
     if let Some((session, head, view, exact)) = head_view(&q).await? {
         if first.saturating_add(count) <= exact {
             let row_count = view.row_count();
-            let rows = blocking(move || read_rows(&session.file, &session.format, &head.0, &view, first, count)).await?;
+            let rows =
+                blocking(move || read_rows(&session.file, &session.format, &head.0, &view, first, count, &marker)).await?;
             return Ok(Json(RowsResponse { row_count, rows }));
         }
     }
     let r = resolve(&q).await?;
     let row_count = r.view.row_count();
-    let rows = blocking(move || read_rows(&r.session.file, &r.session.format, &r.matches, &r.view, first, count)).await?;
+    let rows =
+        blocking(move || read_rows(&r.session.file, &r.session.format, &r.matches, &r.view, first, count, &marker))
+            .await?;
     Ok(Json(RowsResponse { row_count, rows }))
 }
 
@@ -438,6 +552,8 @@ pub struct SearchHit {
     pub text: String,
     /// As in [`Row::fields`]
     pub fields: Option<Vec<String>>,
+    /// Where the search text is, as in [`Row::marks`] (kind 1 only)
+    pub marks: Vec<Mark>,
 }
 
 #[derive(Serialize)]
@@ -449,15 +565,23 @@ pub struct SearchResponse {
     pub next_row: u64,
 }
 
-/// Case-insensitive text search inside the rows of the view (first 1000 hits, or what
-/// is found within the time budget).
+/// Case-insensitive search inside the rows of the view (first 1000 hits, or what is
+/// found within the time budget): for the text `q`, or with `q_regex=true` for the
+/// regular expression `q`, anywhere in the line.
 pub async fn search_view(Query(q): Query<ViewQuery>) -> Result<Json<SearchResponse>, ApiError> {
     let needle = q.q.clone().unwrap_or_default();
     if needle.is_empty() {
         return Err(ApiError(StatusCode::BAD_REQUEST, "Missing q".into()));
     }
-    let re = regex::bytes::RegexBuilder::new(&regex::escape(&needle))
+    let q_regex = q.q_regex.unwrap_or(false);
+    let marker = Marker {
+        filter: None,
+        search: Some(search_regex(&needle, q_regex).map_err(|e| ApiError(StatusCode::BAD_REQUEST, e))?),
+    };
+    // the same pattern on the raw bytes, so lines are decoded only when they match
+    let re = regex::bytes::RegexBuilder::new(&if q_regex { needle.clone() } else { regex::escape(&needle) })
         .case_insensitive(true)
+        .size_limit(16 << 20)
         .build()
         .map_err(|e| ApiError(StatusCode::BAD_REQUEST, e.to_string()))?;
     let r = resolve(&q).await?;
@@ -483,8 +607,12 @@ pub async fn search_view(Query(q): Query<ViewQuery>) -> Result<Json<SearchRespon
                     for (rw, l, bytes) in ViewLines::new(&r.session.file, &r.view, b, n) {
                         if re.is_match(bytes) {
                             let (text, _) = display_text(bytes, MAX_DISPLAY_BYTES);
-                            let fields = split_for_display(&r.session.format, &text).0;
-                            out.push(SearchHit { row: rw, line_number: l + 1, text, fields });
+                            let format = &r.session.format;
+                            let parsed = format.parse(&text);
+                            let fields = parsed
+                                .map(|p| (0..format.fields().len()).map(|i| p.get(&text, i).to_string()).collect());
+                            let marks = marker.marks(format, &text, parsed.as_ref());
+                            out.push(SearchHit { row: rw, line_number: l + 1, text, fields, marks });
                             if out.len() >= limit {
                                 break;
                             }
@@ -509,6 +637,24 @@ pub async fn search_view(Query(q): Query<ViewQuery>) -> Result<Json<SearchRespon
     })
     .await?;
     Ok(Json(resp))
+}
+
+// ---------------------------------------------------------------- /regex/check
+
+#[derive(Deserialize)]
+pub struct RegexCheckQuery {
+    pub pattern: String,
+}
+
+#[derive(Serialize)]
+pub struct RegexCheck {
+    /// Why the pattern does not compile (several lines, the spot marked); `null` if it does
+    pub error: Option<String>,
+}
+
+/// Whether a filter regular expression compiles, to check it while it is typed.
+pub async fn check_regex(Query(q): Query<RegexCheckQuery>) -> Json<RegexCheck> {
+    Json(RegexCheck { error: compile_regex(&q.pattern).err() })
 }
 
 // ---------------------------------------------------------------- export
@@ -640,6 +786,7 @@ pub async fn export_view_to_file(
     levels: Option<&str>,
     fields: Option<&str>,
     keywords: Option<&str>,
+    regex: Option<&str>,
     time: (Option<f64>, Option<f64>),
     context: u64,
     csv: bool,
@@ -647,7 +794,7 @@ pub async fn export_view_to_file(
 ) -> Result<u64, String> {
     let session = get_user_log(session_id).ok_or("Session ID not found")?;
     let (matches, _) = session
-        .matches(LineFilter::from_query(levels, fields, keywords)?.with_time_ms(time.0, time.1)?)
+        .matches(LineFilter::from_query(levels, fields, keywords, regex)?.with_time_ms(time.0, time.1)?)
         .await
         .map_err(|e| match e {
             QueryError::Cancelled => "Cancelled by a newer filter".to_string(),
@@ -812,6 +959,25 @@ mod tests {
     }
 
     #[test]
+    fn marks_are_per_field_in_utf16_units() {
+        let fmt = LogFormat::compile("[%{time}] [%l] [%n] %v").unwrap();
+        let filter = LineFilter::from_query(None, None, Some("net"), Some(r#"["\\d+ms"]"#)).unwrap();
+        let marker = Marker::new(&filter, Some("ERR"), false).ok().unwrap();
+        let text = "[t] [ERROR] [net] gr\u{fc}\u{df}e \u{1F600} net 12ms";
+        let p = fmt.parse(text);
+        let marks = marker.marks(&fmt, text, p.as_ref());
+        // the keyword only in the message (not the domain field), after a 2-unit emoji;
+        // the search anywhere, case-insensitive
+        assert_eq!(marks, vec![(1, 0, 3, 1), (3, 9, 12, 0), (3, 13, 17, 0)]);
+        // a search across fields is cut at each field's edges
+        let m = Marker::new(&LineFilter::default(), Some("r] [n"), false).ok().unwrap();
+        assert_eq!(m.marks(&fmt, text, p.as_ref()), vec![(1, 4, 5, 1), (2, 0, 1, 1)]);
+        // a line not in the format: offsets in the whole text
+        assert_eq!(marker.marks(&fmt, "  at net.Foo", None), vec![(-1, 5, 8, 0)]);
+        assert!(Marker::new(&LineFilter::default(), Some("(x"), true).is_err());
+    }
+
+    #[test]
     fn csv_quoting() {
         let mut b = Vec::new();
         csv_field(&mut b, "a,\"b\"");
@@ -830,7 +996,7 @@ mod tests {
         let text = "[2026-11-20 10:00:00.001] [7] [info] a, b\n    at frame\n[2026-11-20 10:00:00.002] [8] [error] boom\n";
         let file = LogFile::from_test_bytes(text.as_bytes(), 64);
         let fmt = Arc::new(LogFormat::compile("[%Y-%m-%d %H:%M:%S.%e] [%t] [%l] %v").unwrap());
-        let filter = LineFilter::from_query(None, Some(r#"{"thread":["8"]}"#), None).unwrap();
+        let filter = LineFilter::from_query(None, Some(r#"{"thread":["8"]}"#), None, None).unwrap();
         let m = scan_matches(&file, &CompiledFilter::new(filter, fmt.clone()), &AtomicBool::new(false))
             .unwrap_or_else(|_| panic!("cancelled"));
         let v = m.view(1);
@@ -865,7 +1031,7 @@ mod tests {
         for (levels, fields) in cases {
             for context in [0, 1, 2, 5, 1000] {
                 for csv in [false, true] {
-                    let filter = LineFilter::from_query(levels, fields, None).unwrap();
+                    let filter = LineFilter::from_query(levels, fields, None, None).unwrap();
                     let m = scan_matches(&file, &CompiledFilter::new(filter.clone(), fmt.clone()), &AtomicBool::new(false))
                         .unwrap_or_else(|_| panic!("cancelled"));
                     let v = m.view(context);

@@ -156,3 +156,23 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* Matched text in the rows and search results (LogViewer `marked`): the filter's
+   keywords and regular expressions, and the search panel's text, which wins where
+   both overlap. */
+mark.mark-filter {
+  background: rgb(250 204 21 / 0.26);
+  color: inherit;
+  border-radius: 2px;
+  box-shadow: inset 0 -1.5px rgb(250 204 21 / 0.85);
+}
+mark.mark-search {
+  background: #f59e0b;
+  color: #1c1917;
+  border-radius: 2px;
+}
+
+/* A regular expression chip in the filter bar: tinted with the logo's vermilion */
+.term-regex {
+  background: color-mix(in oklab, var(--update) 16%, var(--secondary));
+}

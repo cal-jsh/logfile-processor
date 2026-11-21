@@ -45,6 +45,8 @@ export function exportView(args: {
   /** JSON object of field value lists, e.g. {"thread":["12"]} */
   fields: string | null;
   keywords: string | null;
+  /** JSON list of regular expressions, e.g. ["code=5\\d\\d"] */
+  regex: string | null;
   /** Time range filter, ms in the log's clock (`to` excluded) */
   timeFrom: number | null;
   timeTo: number | null;

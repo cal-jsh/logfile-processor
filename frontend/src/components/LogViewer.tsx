@@ -12,6 +12,7 @@ import { formatRange, type TimeRange } from "./TimeRangeSelect";
 import { isLineNumber, parseTimeInput, type ParsedTime } from "../lib/timeInput";
 import type { FieldDef } from "../lib/logSummary";
 import { IndexingSweep } from "./IndexingSweep";
+import { RegexToggle } from "./RegexToggle";
 
 /*
  * Viewport-based log viewer.
@@ -42,6 +43,8 @@ type Row = {
   t: number | null;
   context: boolean;
   truncated: boolean;
+  /** Text to mark (filter matches, search matches); missing when there is none */
+  marks?: Mark[];
 };
 
 type ViewInfo = {
@@ -56,7 +59,14 @@ type ViewInfo = {
   partial?: boolean;
 };
 
-type SearchHit = { row: number; line_number: number; text: string; fields: string[] | null };
+type SearchHit = { row: number; line_number: number; text: string; fields: string[] | null; marks: Mark[] };
+
+/** A marked piece of a row, from the backend: [field, start, end, kind]. `field` is the
+    index of the format field (-1: the whole text of a line not in the format); start and
+    end are string indices into that field's value; kind 0 = the filter's keywords and
+    regular expressions, 1 = the search panel's text. */
+type Mark = [number, number, number, number];
+const MARK_CLASS = ["mark-filter", "mark-search"];
 
 /* ---------------- Helpers ---------------- */
 /** Colors of text fields in the rows; others are gray */
@@ -72,43 +82,44 @@ function formatDelta(ms: number): string {
   else return `${(ms / 1000).toFixed(2)} s`;
 }
 
-/** Mark the occurrences of `q` (case-insensitive) in a search result */
-function highlight(text: string, q: string): React.ReactNode {
-  if (!q) return text;
-  const lower = text.toLowerCase();
-  const needle = q.toLowerCase();
+/** `text` (field `field` of a row) with its marks wrapped in <mark>. Where a search
+    match and a filter match overlap, the search wins. */
+function marked(text: string, marks: Mark[] | undefined, field: number): React.ReactNode {
+  const mine = marks?.filter((m) => m[0] === field);
+  if (!mine?.length) return text;
+  const kind = new Int8Array(text.length).fill(-1);
+  for (const k of [0, 1]) for (const m of mine) if (m[3] === k) kind.fill(k, m[1], Math.min(m[2], text.length));
   const out: React.ReactNode[] = [];
-  let i = 0;
-  for (let j = lower.indexOf(needle); j !== -1 && out.length < 40; j = lower.indexOf(needle, i)) {
-    if (j > i) out.push(text.slice(i, j));
-    out.push(
-      <mark key={j} className="rounded-sm bg-yellow-300/70 px-0.5 text-inherit">
-        {text.slice(j, j + q.length)}
-      </mark>
-    );
-    i = j + q.length;
+  for (let i = 0; i < text.length; ) {
+    let j = i + 1;
+    while (j < text.length && kind[j] === kind[i]) j++;
+    const piece = text.slice(i, j);
+    out.push(kind[i] < 0 ? piece : <mark key={i} className={MARK_CLASS[kind[i]]}>{piece}</mark>);
+    i = j;
   }
-  if (i < text.length) out.push(text.slice(i));
   return out;
 }
 
 /** A search hit, compact: time, level, other fields and the message, with the match marked */
-function ResultText({ hit, q, columns }: { hit: SearchHit; q: string; columns: FieldDef[] }) {
-  const { text, fields } = hit;
+function ResultText({ hit, columns }: { hit: SearchHit; columns: FieldDef[] }) {
+  const { text, fields, marks } = hit;
   if (!fields) {
     // not in the log format: start shortly before the match so it stays visible
-    const at = text.toLowerCase().indexOf(q.toLowerCase());
-    const snippet = at > 40 ? "…" + text.slice(at - 20) : text;
-    return <span className="truncate">{highlight(snippet, q)}</span>;
+    const at = marks.find((m) => m[0] === -1)?.[1] ?? 0;
+    const cut = at > 40 ? at - 20 : 0;
+    if (!cut) return <span className="truncate">{marked(text, marks, -1)}</span>;
+    const shifted = marks.map((m): Mark => [m[0], m[1] - cut + 1, m[2] - cut + 1, m[3]]).filter((m) => m[2] > 1);
+    return <span className="truncate">{marked("…" + text.slice(cut), shifted, -1)}</span>;
   }
   const of = (kind: FieldDef["kind"]) => {
     const i = columns.findIndex((c) => c.kind === kind);
     return i >= 0 ? fields[i] : undefined;
   };
+  const messageAt = columns.findIndex((c) => c.kind === "message");
   const ts = of("time");
   const time = ts?.match(/\d{2}:\d{2}:\d{2}(\.\d{1,3})?/)?.[0] ?? ts;
   const level = of("level");
-  const others = columns.map((c, i) => (c.kind === "text" ? fields[i] : null)).filter((v): v is string => !!v);
+  const others = columns.map((c, i) => (c.kind === "text" && fields[i] ? i : -1)).filter((i) => i >= 0);
   return (
     <span className="flex min-w-0 items-baseline gap-2">
       {time && <span className="shrink-0 tabular-nums text-muted-foreground">{time}</span>}
@@ -118,10 +129,10 @@ function ResultText({ hit, q, columns }: { hit: SearchHit; q: string; columns: F
         </span>
       )}
       <span className="truncate">
-        {others.map((v, i) => (
-          <span key={i} className="text-muted-foreground">{highlight(v, q)} </span>
+        {others.map((i) => (
+          <span key={i} className="text-muted-foreground">{marked(fields[i], marks, i)} </span>
         ))}
-        {highlight(of("message") ?? text, q)}
+        {messageAt >= 0 ? marked(fields[messageAt], marks, messageAt) : text}
       </span>
     </span>
   );
@@ -195,11 +206,40 @@ export const LogViewer = ({
   const [highlightRow, setHighlightRow] = useState<number | null>(null);
 
   const pagesRef = useRef<Map<number, Row[]>>(new Map());
+  // rows of the same view with the previous search marks, shown until they are refetched
+  const stalePagesRef = useRef<Map<number, Row[]> | null>(null);
   const inflightRef = useRef<Map<number, AbortController>>(new Map());
   const [, setPagesVersion] = useState(0);
 
   const viewportRef = useRef<HTMLDivElement>(null);
   const trackRef = useRef<HTMLDivElement>(null);
+
+  /* ---------------- Search inside the results (backend) ---------------- */
+  const [searchInput, setSearchInput] = useState("");
+  const [search, setSearch] = useState("");
+  const [searchRegex, setSearchRegexState] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("logviewer.searchRegex") === "true";
+    } catch {
+      return false;
+    }
+  });
+  const setSearchRegex = (on: boolean) => {
+    setSearchRegexState(on);
+    try {
+      localStorage.setItem("logviewer.searchRegex", String(on));
+    } catch {
+      /* not stored */
+    }
+  };
+  const [searchResults, setSearchResults] = useState<SearchHit[]>([]);
+  const [searchComplete, setSearchComplete] = useState(true);
+  const [isSearching, setIsSearching] = useState(false);
+  // why the search regex does not compile (from the backend)
+  const [searchError, setSearchError] = useState<string | null>(null);
+  // query parameters of the last search that worked, so the rows mark it too
+  const [markQuery, setMarkQuery] = useState("");
+  const rowMarkQuery = searchOpen ? markQuery : "";
 
   const visibleRows = Math.max(1, Math.floor(viewportHeight / ROW_HEIGHT));
   const rowCount = info?.row_count ?? 0;
@@ -225,6 +265,7 @@ export const LogViewer = ({
     inflightRef.current.forEach((c) => c.abort());
     inflightRef.current.clear();
     pagesRef.current = new Map();
+    stalePagesRef.current = null;
     setLoading(true);
     setError(null);
     setHighlightRow(null);
@@ -278,6 +319,16 @@ export const LogViewer = ({
   }, [baseUrl, viewParams, filterParams]);
 
   /* ---------------- Fetch visible pages ---------------- */
+  // A new search to mark refetches the rows (the backend marks them); the old ones stay
+  // on screen meanwhile.
+  const markedQueryRef = useRef(rowMarkQuery);
+  if (markedQueryRef.current !== rowMarkQuery) {
+    markedQueryRef.current = rowMarkQuery;
+    inflightRef.current.forEach((c) => c.abort());
+    inflightRef.current.clear();
+    if (pagesRef.current.size) stalePagesRef.current = pagesRef.current;
+    pagesRef.current = new Map();
+  }
   useEffect(() => {
     if (!info || loading || rowCount === 0) return;
     const firstPage = Math.max(0, Math.floor(top / PAGE_SIZE) - OVERSCAN_PAGES);
@@ -300,7 +351,7 @@ export const LogViewer = ({
       const ctrl = new AbortController();
       inflightRef.current.set(p, ctrl);
       const myPages = pages;
-      fetch(`${baseUrl}/view/rows?${viewParams}&first_row=${p * PAGE_SIZE}&count=${PAGE_SIZE}${info.partial ? "&partial=true" : ""}`, {
+      fetch(`${baseUrl}/view/rows?${viewParams}${rowMarkQuery}&first_row=${p * PAGE_SIZE}&count=${PAGE_SIZE}${info.partial ? "&partial=true" : ""}`, {
         signal: ctrl.signal,
       })
         .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
@@ -322,10 +373,12 @@ export const LogViewer = ({
           if (inflightRef.current.get(p) === ctrl) inflightRef.current.delete(p);
         });
     }
-  }, [info, loading, top, visibleRows, rowCount, baseUrl, viewParams]);
+  }, [info, loading, top, visibleRows, rowCount, baseUrl, viewParams, rowMarkQuery]);
 
-  const getRow = (r: number): Row | undefined =>
-    pagesRef.current.get(Math.floor(r / PAGE_SIZE))?.[r % PAGE_SIZE];
+  const getRow = (r: number): Row | undefined => {
+    const p = Math.floor(r / PAGE_SIZE);
+    return (pagesRef.current.get(p) ?? stalePagesRef.current?.get(p))?.[r % PAGE_SIZE];
+  };
 
   /* ---------------- Viewport size ---------------- */
   useEffect(() => {
@@ -400,13 +453,7 @@ export const LogViewer = ({
     setTop(clamp((y / (trackHeight - thumbHeight)) * maxTop, 0, maxTop));
   };
 
-  /* ---------------- Search inside the results (backend) ---------------- */
-  const [searchInput, setSearchInput] = useState("");
-  const [search, setSearch] = useState("");
-  const [searchResults, setSearchResults] = useState<SearchHit[]>([]);
-  const [searchComplete, setSearchComplete] = useState(true);
-  const [isSearching, setIsSearching] = useState(false);
-
+  /* ---------------- Search inside the results: requests ---------------- */
   useEffect(() => {
     const t = setTimeout(() => setSearch(searchInput), 300);
     return () => clearTimeout(t);
@@ -414,26 +461,38 @@ export const LogViewer = ({
 
   useEffect(() => {
     setSearchResults([]);
+    setSearchError(null);
     if (!search || search.length < SEARCH_MIN || loading) {
       setIsSearching(false);
+      setMarkQuery("");
       return;
     }
     const ctrl = new AbortController();
     setIsSearching(true);
-    fetch(`${baseUrl}/view/search?${viewParams}&q=${encodeURIComponent(search)}`, {
+    const qParams = `&q=${encodeURIComponent(search)}${searchRegex ? "&q_regex=true" : ""}`;
+    fetch(`${baseUrl}/view/search?${viewParams}${qParams}`, {
       signal: ctrl.signal,
     })
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+      .then(async (r) => {
+        if (r.ok) return r.json();
+        const message = await r.text();
+        throw Object.assign(new Error(message), { status: r.status });
+      })
       .then((data: { hits: SearchHit[]; complete: boolean }) => {
         setSearchResults(data.hits);
         setSearchComplete(data.complete);
         setIsSearching(false);
+        setMarkQuery(qParams);
       })
       .catch((e) => {
-        if (e?.name !== "AbortError") setIsSearching(false);
+        if (e?.name === "AbortError") return;
+        setIsSearching(false);
+        setMarkQuery("");
+        // an invalid regular expression: say why, nothing else breaks
+        if (e?.status === 400) setSearchError(e.message);
       });
     return () => ctrl.abort();
-  }, [search, viewParams, baseUrl, loading]);
+  }, [search, searchRegex, viewParams, baseUrl, loading]);
 
   const jumpToRow = (row: number) => {
     scrollTo(row - Math.floor(visibleRows / 2));
@@ -566,6 +625,7 @@ export const LogViewer = ({
         levels: p.get("levels"),
         fields: p.get("fields"),
         keywords: p.get("keywords"),
+        regex: p.get("regex"),
         timeFrom: timeRange?.from ?? null,
         timeTo: timeRange?.to ?? null,
         context,
@@ -639,7 +699,7 @@ export const LogViewer = ({
       columns.forEach((c, i) => {
         const v = row.fields![i] ?? "";
         if (c.kind === "message") {
-          cells.push(<span key={i}>{v}</span>);
+          cells.push(<span key={i}>{marked(v, row.marks, i)}</span>);
           return;
         }
         if (hiddenColumns.includes(c.name)) return;
@@ -651,7 +711,7 @@ export const LogViewer = ({
         }
         cells.push(
           <span key={i} className={c.kind === "text" ? FIELD_COLORS[c.name] ?? "text-gray-400" : undefined} style={style}>
-            [{v}]{" "}
+            [{marked(v, row.marks, i)}]{" "}
           </span>
         );
         if (c.kind === "time" && deltaEl) {
@@ -660,7 +720,7 @@ export const LogViewer = ({
         }
       });
     } else {
-      cells.push(<span key="text">{row.text}</span>);
+      cells.push(<span key="text">{marked(row.text, row.marks, -1)}</span>);
     }
 
     rows.push(
@@ -683,6 +743,8 @@ export const LogViewer = ({
   const parsedGoto = parseGoto();
   const panelStatus = isSearching
     ? "Searching…"
+    : searchError
+      ? <span className="text-destructive">Invalid regular expression</span>
     : search.length >= SEARCH_MIN
       ? searchResults.length === 0
         ? "No matches"
@@ -815,15 +877,27 @@ export const LogViewer = ({
               <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
               <Input
                 ref={searchInputRef}
-                placeholder="Search in view…  (Ctrl+F)"
-                className="h-8 pl-8"
+                placeholder={searchRegex ? "Search in view, regular expression…  (Ctrl+F)" : "Search in view…  (Ctrl+F)"}
+                className={`h-8 pl-8 pr-10 ${searchRegex ? "font-mono text-[13px]" : ""} ${searchError ? "border-destructive focus-visible:border-destructive focus-visible:ring-destructive/30" : ""}`}
                 value={searchInput}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSearchInput(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && searchResults.length > 0) jumpToRow(searchResults[0].row);
+                  else if (e.altKey && e.key.toLowerCase() === "r") {
+                    e.preventDefault();
+                    setSearchRegex(!searchRegex);
+                  }
                 }}
+                aria-invalid={!!searchError}
+                spellCheck={false}
               />
+              <RegexToggle on={searchRegex} onChange={setSearchRegex} className="absolute right-1 top-1/2 -translate-y-1/2" />
             </div>
+            {searchError && (
+              <pre className="max-h-28 overflow-auto rounded-md bg-destructive/10 px-2 py-1.5 font-mono text-[11px] leading-snug whitespace-pre-wrap text-destructive">
+                {searchError.replace(/^Invalid regular expression: (regex parse error:\n)?/, "")}
+              </pre>
+            )}
             <div className="flex gap-2">
               <div className="relative flex-1">
                 <LocateFixed className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
@@ -881,7 +955,7 @@ export const LogViewer = ({
                 title={r.text}
               >
                 <span className="w-14 shrink-0 text-right tabular-nums text-muted-foreground">{r.line_number}</span>
-                <ResultText hit={r} q={search} columns={columns} />
+                <ResultText hit={r} columns={columns} />
               </button>
             ))}
           </div>

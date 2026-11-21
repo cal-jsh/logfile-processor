@@ -48,6 +48,8 @@ pub struct FilterArgs {
     pub file: PathBuf,
     /// The message contains one of these (case-sensitive)
     pub keywords: Vec<String>,
+    /// Or the message matches one of these regular expressions (checked to compile)
+    pub patterns: Vec<String>,
     /// Log levels as typed; matched case-insensitively
     pub levels: Vec<String>,
     /// Values of the domain field (`%n`)
@@ -131,6 +133,12 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Cli, String> {
                 // trimmed, like the viewer's keyword chips
                 f.keywords.push(v.trim().to_string());
             }
+            "-e" | "--regex" => {
+                let v = value()?;
+                logfile_processor::parsing::text_match::compile_regex(&v)
+                    .map_err(|e| format!("{name}: invalid regular expression:\n{e}"))?;
+                f.patterns.push(v);
+            }
             "-l" | "--level" => f.levels.extend(list(&value()?)),
             "-d" | "--domain" => f.domains.extend(list(&value()?)),
             "-f" | "--field" => {
@@ -200,6 +208,9 @@ Usage:
 
 Filters (a line must pass every kind given, and match any one value of each):
   -k, --keyword TEXT         Message contains TEXT (case-sensitive). Repeat for more.
+  -e, --regex REGEX          Message matches the regular expression REGEX (Rust
+                             regex syntax, case-sensitive; (?i) ignores case).
+                             Repeat for more. With -k, any keyword or REGEX will do
   -l, --level LEVEL,...      Log level, e.g. error,critical (any case; warn and
                              warning are the same)
   -d, --domain NAME,...      Domain (logger name, %n in the pattern), exact value,
@@ -229,6 +240,9 @@ Examples:
 
   Lines mentioning timeout or refused, as CSV:
     {cli} app.log -k timeout -k refused -o timeouts.csv
+
+  Lines with an HTTP status 500 to 599, ignoring case of "status":
+    {cli} app.log -e "(?i)status[ =:]*5\d\d\b"
 
   Warnings of thread 12 that mention a disk, through another command:
     {cli} app.log -l warn -f thread=12 | Select-String disk
@@ -330,6 +344,12 @@ mod tests {
         ]);
         assert_eq!(f.file, PathBuf::from("a.log"));
         assert_eq!(f.keywords, ["time out", "a,b"]); // keywords are not split
+
+        // regular expressions are kept as typed (spaces, commas) and must compile
+        let r = filter(&["a.log", "-e", " a{1,2} ", "--regex=^x$"]);
+        assert_eq!(r.patterns, [" a{1,2} ", "^x$"]);
+        let e = p(&["a.log", "-e", "(oops"]).unwrap_err();
+        assert!(e.contains("invalid regular expression") && e.contains("unclosed group"), "{e}");
         assert_eq!(f.levels, ["error", "CRITICAL", "warn"]);
         assert_eq!(f.domains, ["net", "core"]);
         assert_eq!(f.fields, [("thread".into(), "12".into()), ("thread".into(), "13".into())]);
