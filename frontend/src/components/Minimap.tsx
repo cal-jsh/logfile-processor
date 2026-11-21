@@ -9,10 +9,10 @@ import { RangeShade, rangeCursor, useTimeRangeDrag, type TimeRange } from "./Tim
  * The backend aggregates the levels into one bucket per device pixel (GET /minimap), so
  * the browser never holds per-line data, whatever the file size. With a filter, the
  * file's levels stay as a dim background and the matching lines are drawn on top.
- * The box marks the lines currently on screen; click or drag to jump.
+ * The box marks the lines currently on screen; click to jump (by line, dragging scrolls).
  *
- * Time range filter (time axis): drag on the time scale, or Shift+drag on the bar, to
- * filter to a range; its edges can be dragged on either, and the range moved on the
+ * Time range filter (time axis): drag on the bar or the time scale to filter to a range,
+ * click to jump; the range's edges can be dragged on either, and the range moved on the
  * scale (see TimeRangeSelect). Outside the range the bar is dimmed. A double-click on the
  * scale or the bar clears the range.
  *
@@ -289,7 +289,8 @@ export function Minimap({
   };
   const dragging = useRef(false);
 
-  /* time range: drag on the scale, Shift+drag or an edge on the bar */
+  /* time range (time axis): a drag on the bar or the scale selects, a click jumps; by
+     line, a drag on the bar scrolls through the file as before */
   const canSelect = timeAxis && t1 > t0;
   const rect = () => barRef.current!.getBoundingClientRect();
   const range = useTimeRangeDrag({
@@ -309,8 +310,7 @@ export function Minimap({
 
   const onPointerDown = (e: React.PointerEvent) => {
     if (!lineCount || e.button !== 0) return;
-    const h = canSelect ? range.hit(e.clientX) : null;
-    if (canSelect && (e.shiftKey || h === "from" || h === "to")) {
+    if (canSelect) {
       range.begin(e, false);
       return;
     }
@@ -325,13 +325,13 @@ export function Minimap({
     setHover(p);
     if (range.move(e)) return;
     const h = canSelect ? range.hit(e.clientX) : null;
-    (e.currentTarget as HTMLElement).style.cursor = h === "from" || h === "to" ? "ew-resize" : e.shiftKey && canSelect ? "crosshair" : "";
+    (e.currentTarget as HTMLElement).style.cursor = h === "from" || h === "to" ? "ew-resize" : canSelect ? "crosshair" : "";
     if (dragging.current && p.jump != null) onJumpToLine(p.jump);
   };
   const onPointerUp = (e: React.PointerEvent) => {
     dragging.current = false;
     if (range.dragging() && !range.end()) {
-      // a Shift+click or a click on an edge: jump, as a plain click would
+      // a click, not a drag: jump
       const p = targetAt(e.clientX);
       if (p.jump != null) onJumpToLine(p.jump);
     }
@@ -392,7 +392,7 @@ export function Minimap({
           onPointerCancel={range.cancel}
           onPointerLeave={() => setHover(null)}
           onDoubleClick={() => timeRange && onTimeRangeChange(null)}
-          title={canSelect ? (timeRange ? "Drag the edges or the range to change it · double-click to clear it" : "Drag to filter a time range (or Shift+drag on the bar)") : undefined}
+          title={canSelect ? (timeRange ? "Drag the edges or the range to change it · double-click to clear it" : "Drag to filter a time range") : undefined}
         >
           {ticks.map(({ t, label }) => {
             const x = ((t - t0) / (t1 - t0)) * cssWidth;
@@ -428,7 +428,7 @@ export function Minimap({
         }}
         onPointerLeave={() => setHover(null)}
         onDoubleClick={() => timeRange && onTimeRangeChange(null)}
-        title={timeRange ? "Double-click to clear the time range" : undefined}
+        title={canSelect ? (timeRange ? "Click to jump · drag to select another time range · double-click to clear it" : "Click to jump · drag to filter a time range") : undefined}
         role="slider"
         aria-label={`Minimap by ${axis}: ${color === "level" ? "log levels" : color} across the file, click to jump`}
         aria-valuemin={1}

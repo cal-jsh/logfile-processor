@@ -3,10 +3,11 @@ import { useRef, useState } from "react";
 /*
  * Selecting a time range by dragging, shared by the minimap and the thread lanes.
  *
- * Gestures (the same on both): drag on the time scale, or Shift+drag on the bar or the
- * lanes, to select a range; drag a range's edge to move that edge; drag inside the range
- * on the time scale to move it. Plain drags keep their old meaning (the minimap jumps,
- * zoomed lanes pan). Releasing applies the range as a filter; a click does not.
+ * Gestures: on the minimap (time axis), drag on the bar or its time scale to select a
+ * range, click to jump. On the thread lanes, drag on the time scale or Shift+drag on the
+ * lanes (a plain drag there pans a zoomed view). Everywhere: drag a range's edge to move
+ * that edge, drag inside the range on a time scale to move it, double-click to clear it.
+ * Releasing a drag applies the range as a filter; a click does not.
  *
  * Times are ms since 1970 in the log's own clock (no time zone), as everywhere else.
  */

@@ -498,8 +498,8 @@ function TimeRangeChip({
                 onClick={onPick}
                 title={
                     timeScaleShown
-                        ? "Drag on the minimap's time scale (or Shift+drag on the bar) to filter a time range; or type one in Go to (Ctrl+G), e.g. 14:00 - 14:30"
-                        : "Show the minimap by time, then drag on its time scale to filter a time range"
+                        ? "Drag on the minimap to filter a time range; or type one in Go to (Ctrl+G), e.g. 14:00 - 14:30"
+                        : "Show the minimap by time, then drag on it to filter a time range"
                 }
                 className="inline-flex h-7 items-center gap-1.5 rounded-full border border-dashed px-2.5 text-xs font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
             >
