@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Focus, Maximize2, ZoomIn, ZoomOut } from "lucide-react";
-import { colorMap } from "../lib/colorMap";
+import { colorMap, NO_LEVEL_COLOR } from "../lib/colorMap";
+import { useTheme } from "../lib/theme";
 import { formatFull, timeTicks, type VisibleRange } from "./Minimap";
 import { RangeShade, rangeCursor, useTimeRangeDrag, type TimeRange } from "./TimeRangeSelect";
 
@@ -37,7 +38,8 @@ const MAX_BUCKETS = 16384;
 
 /** Level codes of the API (as the minimap) */
 const CODE_LEVEL = [null, "OTHER", "TRACE", "DEBUG", "INFO", "WARN", "ERROR", "CRITICAL"] as const;
-const CODE_COLOR: (string | null)[] = [null, "#6b6b6b", colorMap.TRACE, colorMap.DEBUG, colorMap.INFO, colorMap.WARN, colorMap.ERROR, colorMap.CRITICAL];
+/** Colours of the codes, from the palette of the theme in effect */
+const codeColors = (): (string | null)[] => [null, NO_LEVEL_COLOR, colorMap.TRACE, colorMap.DEBUG, colorMap.INFO, colorMap.WARN, colorMap.ERROR, colorMap.CRITICAL];
 
 type Lane = { name: string; lines: number };
 
@@ -103,6 +105,7 @@ function paintLane(
 ) {
   const n = levels.length;
   if (!n || !(dt > df) || !(vt > vf)) return;
+  const colors = codeColors();
   const xOf = (j: number) => ((df + (j * (dt - df)) / n - vf) / (vt - vf)) * w;
   let i = 0;
   while (i < n) {
@@ -110,7 +113,7 @@ function paintLane(
     const d = density ? density.charCodeAt(i) - 48 : 9;
     let j = i + 1;
     while (j < n && levels.charCodeAt(j) - 48 === c && (!density || density.charCodeAt(j) - 48 === d)) j++;
-    const color = CODE_COLOR[c];
+    const color = colors[c];
     if (color) {
       const x0 = Math.round(xOf(i));
       const x1 = Math.round(xOf(j));
@@ -159,6 +162,7 @@ export function ThreadLanes({
   const [view, setView] = useState<Window | null>(null); // null: the whole file
   const [height, setHeight] = useState(readHeight);
   const [hover, setHover] = useState<Hover | null>(null);
+  const theme = useTheme();
 
   // a response for another file or field is never drawn
   const key = `${sessionId}|${field}|${filterParams}`;
@@ -246,7 +250,7 @@ export function ThreadLanes({
     for (let l = 0; l < laneCount; l++) {
       const y = l * laneH;
       if (l % 2 === 1) {
-        ctx.fillStyle = "rgba(255,255,255,0.03)";
+        ctx.fillStyle = theme === "light" ? "rgba(42,33,27,0.035)" : "rgba(255,255,255,0.03)";
         ctx.fillRect(0, y, w, laneH);
       }
       const markH = laneH - 2 * pad;
@@ -256,7 +260,7 @@ export function ThreadLanes({
       // errors and warnings that do not dominate their column: a strip on top of the mark
       paintLane(ctx, e.alerts[l], null, y + pad, Math.max(1, Math.round(markH / 3)), w, df, dt, vf, vt, 1);
     }
-  }, [data, cssWidth, laneCount, hasTime, t0, t1, vf, vt]);
+  }, [data, cssWidth, laneCount, hasTime, t0, t1, vf, vt, theme]);
 
   /* zoom and pan */
   const clampView = (from: number, to: number): Window | null => {
@@ -467,20 +471,20 @@ export function ThreadLanes({
   const atLevel = hover?.at?.level != null ? CODE_LEVEL[hover.at.level] : null;
 
   return (
-    <div ref={panelRef} className="relative shrink-0 select-none border-b border-white/10 text-white" style={{ background: "#252526" }}>
+    <div ref={panelRef} className="relative shrink-0 select-none border-b border-log-ink/10 bg-log-panel text-log-fg">
       {/* header: name column and time scale */}
-      <div className="flex border-b border-white/5" style={{ height: AXIS_H }}>
-        <div className="flex shrink-0 items-center gap-0.5 border-r border-white/5 pl-2 pr-1 text-[10px] text-white/60" style={{ width: LABEL_W }}>
+      <div className="flex border-b border-log-ink/5" style={{ height: AXIS_H }}>
+        <div className="flex shrink-0 items-center gap-0.5 border-r border-log-ink/5 pl-2 pr-1 text-[10px] text-log-fg/60" style={{ width: LABEL_W }}>
           <span className="mr-auto truncate" title={data ? `${fieldLabel} lanes: the ${data.max_lanes} busiest get a lane each` : undefined}>
             {fieldLabel}s{data ? ` · ${(data.lanes.length + data.other_values).toLocaleString()}` : ""}
           </span>
-          <button type="button" title="Zoom in (Ctrl+wheel)" aria-label="Zoom in" disabled={!hasTime || vt - vf <= MIN_SPAN} onClick={() => zoomAt(0.5, 0.5)} className="rounded p-0.5 hover:bg-white/10 disabled:opacity-30">
+          <button type="button" title="Zoom in (Ctrl+wheel)" aria-label="Zoom in" disabled={!hasTime || vt - vf <= MIN_SPAN} onClick={() => zoomAt(0.5, 0.5)} className="rounded p-0.5 hover:bg-log-ink/10 disabled:opacity-30">
             <ZoomIn className="size-3" />
           </button>
-          <button type="button" title="Zoom out" aria-label="Zoom out" disabled={!view} onClick={() => zoomAt(0.5, 2)} className="rounded p-0.5 hover:bg-white/10 disabled:opacity-30">
+          <button type="button" title="Zoom out" aria-label="Zoom out" disabled={!view} onClick={() => zoomAt(0.5, 2)} className="rounded p-0.5 hover:bg-log-ink/10 disabled:opacity-30">
             <ZoomOut className="size-3" />
           </button>
-          <button type="button" title="Whole file" aria-label="Show the whole file" disabled={!view} onClick={() => setView(null)} className="rounded p-0.5 hover:bg-white/10 disabled:opacity-30">
+          <button type="button" title="Whole file" aria-label="Show the whole file" disabled={!view} onClick={() => setView(null)} className="rounded p-0.5 hover:bg-log-ink/10 disabled:opacity-30">
             <Maximize2 className="size-3" />
           </button>
           {timeRange && hasTime && (
@@ -492,7 +496,7 @@ export function ThreadLanes({
                 const pad = (timeRange.to - timeRange.from) * 0.05;
                 setView(clampView(timeRange.from - pad, timeRange.to + pad));
               }}
-              className="rounded p-0.5 hover:bg-white/10"
+              className="rounded p-0.5 hover:bg-log-ink/10"
             >
               <Focus className="size-3" />
             </button>
@@ -512,13 +516,13 @@ export function ThreadLanes({
             if (x > cssWidth - (label.length * 6 + 8)) return null;
             return (
               <div key={t} className="absolute top-0 h-full" style={{ left: x }}>
-                <div className="absolute bottom-0 h-1 w-px bg-white/30" />
-                <div className="absolute left-1 top-0 whitespace-nowrap font-mono text-[10px] leading-[16px] text-white/55">{label}</div>
+                <div className="absolute bottom-0 h-1 w-px bg-log-ink/30" />
+                <div className="absolute left-1 top-0 whitespace-nowrap font-mono text-[10px] leading-[16px] text-log-fg/55">{label}</div>
               </div>
             );
           })}
           {view && (
-            <div className="absolute right-1 top-0 rounded bg-black/40 px-1 font-mono text-[10px] leading-[16px] text-white/60">
+            <div className="absolute right-1 top-0 rounded bg-log-panel/80 px-1 font-mono text-[10px] leading-[16px] text-log-fg/60">
               {zoomFactor >= 10 ? Math.round(zoomFactor).toLocaleString() : zoomFactor.toFixed(1)}×
             </div>
           )}
@@ -529,12 +533,12 @@ export function ThreadLanes({
       {/* lanes: names and marks scroll together */}
       <div className="overflow-y-auto overflow-x-hidden" style={{ maxHeight: height }}>
         <div className="flex" style={{ height: Math.max(laneCount * LANE_H, 2 * LANE_H) }}>
-          <div className="shrink-0 border-r border-white/5" style={{ width: LABEL_W }}>
+          <div className="shrink-0 border-r border-log-ink/5" style={{ width: LABEL_W }}>
             {names.map((n, i) => (
               <div
                 key={n}
                 title={laneTitle(i)}
-                className={`truncate px-2 font-mono text-[10px] ${hover?.lane === i ? "bg-white/10 text-white" : i >= (data?.lanes.length ?? 0) ? "italic text-white/45" : "text-white/70"}`}
+                className={`truncate px-2 font-mono text-[10px] ${hover?.lane === i ? "bg-log-ink/10 text-log-fg" : i >= (data?.lanes.length ?? 0) ? "italic text-log-fg/45" : "text-log-fg/70"}`}
                 style={{ height: LANE_H, lineHeight: `${LANE_H}px` }}
               >
                 {n}
@@ -563,23 +567,23 @@ export function ThreadLanes({
             {shownRange && <RangeShade range={shownRange} vf={vf} vt={vt} width={cssWidth} draft={!!range.draft} dim={0.3} />}
             {box && (
               <div
-                className="pointer-events-none absolute inset-y-0 z-[6] rounded-[2px] border border-white/80 bg-white/10 shadow-[0_0_0_1px_rgba(0,0,0,0.6)]"
+                className="pointer-events-none absolute inset-y-0 z-[6] rounded-[2px] border border-log-ink/80 bg-log-ink/10 shadow-[0_0_0_1px_color-mix(in_srgb,var(--range-outside)_60%,transparent)]"
                 style={{ left: box.left, width: box.width }}
               />
             )}
             {hover && (
               <>
-                <div className="pointer-events-none absolute inset-y-0 w-px bg-white/60" style={{ left: hover.x }} />
-                <div className="pointer-events-none absolute inset-x-0 bg-white/[0.06]" style={{ top: hover.lane * LANE_H, height: LANE_H }} />
+                <div className="pointer-events-none absolute inset-y-0 w-px bg-log-ink/60" style={{ left: hover.x }} />
+                <div className="pointer-events-none absolute inset-x-0 bg-log-ink/[0.06]" style={{ top: hover.lane * LANE_H, height: LANE_H }} />
               </>
             )}
             {!data && (
-              <div className="pointer-events-none absolute inset-0 flex items-center px-3 text-[11px] text-white/50" style={{ height: LANE_H * 2 }}>
+              <div className="pointer-events-none absolute inset-0 flex items-center px-3 text-[11px] text-log-fg/50" style={{ height: LANE_H * 2 }}>
                 {error ? `Thread lanes unavailable: ${error}` : loading ? "Building thread lanes…" : ""}
               </div>
             )}
             {data && (!hasTime || laneCount === 0) && (
-              <div className="pointer-events-none px-3 text-[11px] leading-[28px] text-white/50">
+              <div className="pointer-events-none px-3 text-[11px] leading-[28px] text-log-fg/50">
                 {!hasTime ? "No timestamps found in this file" : `No ${fieldLabel.toLowerCase()} values in this file`}
               </div>
             )}
@@ -590,7 +594,7 @@ export function ThreadLanes({
       {/* resize handle */}
       {laneCount * LANE_H > 2 * LANE_H && (
         <div
-          className="h-1 cursor-row-resize bg-white/5 hover:bg-white/20"
+          className="h-1 cursor-row-resize bg-log-ink/5 hover:bg-log-ink/20"
           onPointerDown={onResizeDown}
           title="Drag to resize"
           aria-label="Resize thread lanes"
@@ -601,7 +605,7 @@ export function ThreadLanes({
       {/* hover readout, above the lanes so the scroll area does not clip it */}
       {hover && data && (
         <div
-          className="pointer-events-none absolute z-20 max-w-[min(640px,70%)] rounded bg-black/90 px-1.5 py-1 font-mono text-[10px] text-white shadow"
+          className="pointer-events-none absolute z-20 max-w-[min(640px,70%)] rounded bg-log-tip/90 px-1.5 py-1 font-mono text-[10px] text-white shadow"
           style={{
             top: Math.max(0, hover.y + 12),
             ...(hover.x > cssWidth / 2 ? { right: cssWidth - hover.x + 8 } : { left: LABEL_W + hover.x + 8 }),
@@ -616,7 +620,7 @@ export function ThreadLanes({
               <div className="whitespace-nowrap">
                 Line {hover.at.line.toLocaleString()}
                 {atLevel && (
-                  <span className="ml-1.5 font-semibold" style={{ color: CODE_COLOR[hover.at.level!] ?? undefined }}>
+                  <span className="ml-1.5 font-semibold" style={{ color: codeColors()[hover.at.level!] ?? undefined }}>
                     {atLevel === "OTHER" ? "" : atLevel}
                   </span>
                 )}

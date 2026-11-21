@@ -24,6 +24,7 @@ import {
   Bug,
   CircleArrowUp,
   FileText,
+  Settings,
   SquareTerminal,
   FolderOpen,
   Minus,
@@ -36,7 +37,7 @@ import BugReportDialog from "./BugReportDialog";
 import CliHelpDialog from "./CliHelpDialog";
 import UpdateDialog from "./UpdateDialog";
 import { backgroundCheck, currentVersion, type Update } from "../lib/updater";
-import FormatDialog from "./FormatDialog";
+import SettingsDialog, { formatNeedsAttention, type SettingsPage } from "./SettingsDialog";
 import { IndexingSweep } from "./IndexingSweep";
 
 interface Props {
@@ -145,9 +146,7 @@ export default function LogSummarySidebar({
       .filter(([name]) => canonicalLevel(name) === l)
       .reduce((a, [, n]) => a + n, 0),
   }));
-  const [formatOpen, setFormatOpen] = useState(false);
   const format = summary.format;
-  const fit = format.sample_lines > 0 ? format.sample_matched / format.sample_lines : 1;
   // fields that can be hidden: all but the message
   const optionalColumns = format.columns.filter((c) => c.kind !== "message");
   // lanes can be made of any text field (thread first)
@@ -169,6 +168,24 @@ export default function LogSummarySidebar({
   ];
   const levelTotal = levelCounts.reduce((a, b) => a + b.count, 0);
   const [bugReportOpen, setBugReportOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsPage, setSettingsPage] = useState<SettingsPage>("format");
+  const openSettings = (page?: SettingsPage) => {
+    if (page) setSettingsPage(page);
+    setSettingsOpen(true);
+  };
+
+  /* Ctrl+, opens the settings, as in most desktop apps */
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.ctrlKey && !e.altKey && !e.shiftKey && e.key === ",") {
+        e.preventDefault();
+        setSettingsOpen(true);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
   const [cliHelpOpen, setCliHelpOpen] = useState(false);
   const [updateOpen, setUpdateOpen] = useState(false);
   // A newer release found by the quiet check at start (or by the dialog), for the button
@@ -338,28 +355,31 @@ export default function LogSummarySidebar({
 
         <SidebarSeparator className="data-[orientation=horizontal]:w-auto group-data-[collapsible=icon]:hidden" />
 
-        {/* Line format: detected or set by the user */}
-        <SidebarGroup className="group-data-[collapsible=icon]:hidden">
-          <SidebarGroupLabel>Log format</SidebarGroupLabel>
-          <SidebarGroupContent className="flex flex-col gap-1.5 px-2">
-            <button
-              type="button"
-              onClick={() => setFormatOpen(true)}
-              title={`${format.pattern}\n\nClick to change`}
-              className="group/format flex items-center gap-2 rounded-md border bg-background px-2 py-1.5 text-left hover:bg-accent"
-            >
-              <code className="min-w-0 flex-1 truncate font-mono text-xs">{format.pattern}</code>
-              <SlidersHorizontal className="size-3.5 shrink-0 text-muted-foreground group-hover/format:text-foreground" />
-            </button>
-            <div className={cn("text-[11px]", fit < 0.5 || format.raw ? "text-amber-600" : "text-muted-foreground")}>
-              {format.raw
-                ? "No known format found: lines shown as they are"
-                : `${format.detected ? "Detected" : "Set by you"} · fits ${format.sample_matched.toLocaleString()} of the first ${format.sample_lines.toLocaleString()} lines`}
-            </div>
-          </SidebarGroupContent>
-        </SidebarGroup>
-
-        <SidebarSeparator className="data-[orientation=horizontal]:w-auto group-data-[collapsible=icon]:hidden" />
+        {/* The line format lives in Settings; here only a format that doesn't fit is called out */}
+        {formatNeedsAttention(format) && (
+          <>
+            <SidebarGroup className="group-data-[collapsible=icon]:hidden">
+              <SidebarGroupContent className="px-2">
+                <button
+                  type="button"
+                  onClick={() => openSettings("format")}
+                  className="flex w-full items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-left text-xs hover:bg-amber-500/15"
+                >
+                  <SlidersHorizontal className="mt-0.5 size-3.5 shrink-0 text-amber-600" />
+                  <span className="grid gap-0.5">
+                    <span className="font-medium">
+                      {format.raw
+                        ? "No known log format found"
+                        : `Log format fits ${format.sample_matched.toLocaleString()} of the first ${format.sample_lines.toLocaleString()} lines`}
+                    </span>
+                    <span className="text-muted-foreground">Set the log format…</span>
+                  </span>
+                </button>
+              </SidebarGroupContent>
+            </SidebarGroup>
+            <SidebarSeparator className="data-[orientation=horizontal]:w-auto group-data-[collapsible=icon]:hidden" />
+          </>
+        )}
 
         {/* Display options */}
         <SidebarGroup className="group-data-[collapsible=icon]:hidden">
@@ -530,6 +550,16 @@ export default function LogSummarySidebar({
         <SidebarMenu>
           <SidebarMenuItem>
             <SidebarMenuButton
+              tooltip="Settings (Ctrl+,)"
+              onClick={() => openSettings()}
+              className="text-muted-foreground"
+            >
+              <Settings />
+              <span>Settings</span>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+          <SidebarMenuItem>
+            <SidebarMenuButton
               tooltip="Command line options"
               onClick={() => setCliHelpOpen(true)}
               className="text-muted-foreground"
@@ -606,15 +636,14 @@ export default function LogSummarySidebar({
       </SidebarFooter>
       <CliHelpDialog open={cliHelpOpen} onOpenChange={setCliHelpOpen} />
       <BugReportDialog open={bugReportOpen} onOpenChange={setBugReportOpen} />
-      <UpdateDialog open={updateOpen} onOpenChange={setUpdateOpen} onChecked={setPendingUpdate} />
-      <FormatDialog
-        open={formatOpen}
-        onOpenChange={setFormatOpen}
-        baseUrl={baseUrl}
-        sessionId={sessionId}
-        format={format}
-        onApply={onChangeFormat}
+      <SettingsDialog
+        open={settingsOpen}
+        onOpenChange={setSettingsOpen}
+        page={settingsPage}
+        onPageChange={setSettingsPage}
+        format={{ baseUrl, sessionId, format, onApply: onChangeFormat }}
       />
+      <UpdateDialog open={updateOpen} onOpenChange={setUpdateOpen} onChecked={setPendingUpdate} />
       <SidebarRail />
     </Sidebar>
   );

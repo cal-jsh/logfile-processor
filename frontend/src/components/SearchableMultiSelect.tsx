@@ -117,7 +117,7 @@ export default function SearchableMultiSelect({
             </CommandGroup>
 
             {/* separator between the actions and the selectable options */}
-            <div className="border-t border-gray-200 my-1 mx-2" role="separator" />
+            <div className="border-t border-border my-1 mx-2" role="separator" />
 
             <CommandGroup>
               {filtered.map((opt) => (

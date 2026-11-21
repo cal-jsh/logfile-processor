@@ -13,6 +13,7 @@ import { isLineNumber, parseTimeInput, type ParsedTime } from "../lib/timeInput"
 import type { FieldDef } from "../lib/logSummary";
 import { IndexingSweep } from "./IndexingSweep";
 import { RegexToggle } from "./RegexToggle";
+import { useTheme } from "../lib/theme";
 
 /*
  * Viewport-based log viewer.
@@ -71,9 +72,9 @@ const MARK_CLASS = ["mark-filter", "mark-search"];
 /* ---------------- Helpers ---------------- */
 /** Colors of text fields in the rows; others are gray */
 const FIELD_COLORS: Record<string, string> = {
-  domain: "text-blue-400",
-  thread: "text-violet-300",
-  process: "text-teal-300",
+  domain: "text-log-domain",
+  thread: "text-log-thread",
+  process: "text-log-process",
 };
 
 function formatDelta(ms: number): string {
@@ -194,6 +195,8 @@ export const LogViewer = ({
   timeRange: TimeRange | null;
   onTimeRangeChange: (r: TimeRange | null) => void;
 }) => {
+  // level colours come from the theme's palette: render again when it changes
+  useTheme();
   const viewParams = `session_id=${encodeURIComponent(sessionId)}${filterParams}&context=${context}`;
 
   const [info, setInfo] = useState<ViewInfo | null>(null);
@@ -677,7 +680,7 @@ export const LogViewer = ({
     const row = getRow(r);
     if (!row) {
       rows.push(
-        <div key={r} className="font-mono px-3 text-gray-600" style={{ height: ROW_HEIGHT, lineHeight: `${ROW_HEIGHT}px` }}>
+        <div key={r} className="font-mono px-3 text-log-faint" style={{ height: ROW_HEIGHT, lineHeight: `${ROW_HEIGHT}px` }}>
           …
         </div>
       );
@@ -689,7 +692,7 @@ export const LogViewer = ({
       const prev = getRow(r - 1);
       if (row.t != null && prev?.t != null) delta = formatDelta(row.t - prev.t);
     }
-    const deltaEl = delta && <span className="text-gray-500 italic">(+{delta}) </span>;
+    const deltaEl = delta && <span className="text-log-dim italic">(+{delta}) </span>;
 
     // the fields as columns: [value] padded to the widest value of the field, so
     // they line up; lines not in the format are shown as they are
@@ -706,11 +709,11 @@ export const LogViewer = ({
         const width = columnWidths[c.name];
         const style: React.CSSProperties = width ? { display: "inline-block", minWidth: `${width + 3}ch` } : {};
         if (c.kind === "level") {
-          style.color = levelColor(v) ?? "white";
+          style.color = levelColor(v) ?? "var(--log-fg)";
           style.fontWeight = "bold";
         }
         cells.push(
-          <span key={i} className={c.kind === "text" ? FIELD_COLORS[c.name] ?? "text-gray-400" : undefined} style={style}>
+          <span key={i} className={c.kind === "text" ? FIELD_COLORS[c.name] ?? "text-log-field" : undefined} style={style}>
             [{marked(v, row.marks, i)}]{" "}
           </span>
         );
@@ -729,13 +732,13 @@ export const LogViewer = ({
         className={`font-mono px-3 whitespace-pre ${row.context ? "opacity-60" : ""} ${r === highlightRow ? "bg-yellow-500/30" : ""}`}
         style={{ height: ROW_HEIGHT, lineHeight: `${ROW_HEIGHT}px` }}
       >
-        <span className="inline-block text-right text-gray-500" style={{ minWidth: `${lineDigits}ch` }}>
+        <span className="inline-block text-right text-log-dim" style={{ minWidth: `${lineDigits}ch` }}>
           {row.line_number}
         </span>
         :{" "}
         {!deltaShown && deltaEl}
         {cells}
-        {row.truncated && <span className="text-gray-500 italic"> … (line cut for display)</span>}
+        {row.truncated && <span className="text-log-dim italic"> … (line cut for display)</span>}
       </div>
     );
   }
@@ -758,8 +761,8 @@ export const LogViewer = ({
   return (
     <div className="relative flex h-full min-h-0 w-full flex-col overflow-hidden rounded-lg border">
       {loading && (
-        <div className="absolute inset-0 bg-black/40 flex items-center justify-center z-30">
-          <Spinner className="w-8 h-8 text-white" />
+        <div className="absolute inset-0 bg-log/50 flex items-center justify-center z-30">
+          <Spinner className="w-8 h-8 text-log-fg" />
         </div>
       )}
 
@@ -830,7 +833,7 @@ export const LogViewer = ({
         />
       )}
 
-      <div className="flex flex-1 min-h-0" style={{ background: "#1e1e1e", color: "white" }}>
+      <div className="flex flex-1 min-h-0 bg-log text-log-fg">
         <div
           ref={viewportRef}
           tabIndex={0}
@@ -843,12 +846,12 @@ export const LogViewer = ({
         {/* Scrollbar */}
         <div
           ref={trackRef}
-          className="w-3 relative bg-white/5 cursor-pointer"
+          className="w-3 relative bg-log-ink/5 cursor-pointer"
           onPointerDown={onTrackDown}
         >
           {rowCount > visibleRows && (
             <div
-              className="absolute left-0.5 right-0.5 rounded bg-white/40 hover:bg-white/60"
+              className="absolute left-0.5 right-0.5 rounded bg-log-ink/40 hover:bg-log-ink/60"
               style={{ top: thumbTop, height: thumbHeight }}
               onPointerDown={onThumbDown}
               onPointerMove={onThumbMove}

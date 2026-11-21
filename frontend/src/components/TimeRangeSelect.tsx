@@ -15,9 +15,16 @@ import { useRef, useState } from "react";
 /** A time range filter: `from` included, `to` excluded */
 export type TimeRange = { from: number; to: number };
 
-/** Colour of the range edges and label: the logo's paper tone, apart from every level
-    and group colour, and from the white box that marks the rows on screen */
+/** The logo's paper tone, for the time range chip in the filter bar. On the minimap and
+    lanes the edges and label use `--range` (paper on the dark surface, ink on the light
+    one): apart from every level and group colour, and from the box that marks the rows
+    on screen */
 export const RANGE_COLOR = "#f3eadb";
+
+/* On the log surface the range follows the theme (index.css): paper edges with the
+   outside darkened on the dark surface, ink edges with the outside washed out on paper */
+const EDGE = "var(--range)";
+const outside = (dim: number) => `color-mix(in srgb, var(--range-outside) ${Math.round(dim * 100)}%, transparent)`;
 
 /** css px around an edge that grab it */
 const EDGE_GRAB = 5;
@@ -206,29 +213,29 @@ export function RangeShade({
       : { left: b + 6 };
   return (
     <div className="pointer-events-none absolute inset-0 z-[5] overflow-hidden">
-      <div className="absolute inset-y-0 left-0" style={{ width: Math.max(0, a), background: `rgba(0,0,0,${dim})` }} />
-      <div className="absolute inset-y-0 right-0" style={{ left: Math.min(width, b), background: `rgba(0,0,0,${dim})` }} />
+      <div className="absolute inset-y-0 left-0" style={{ width: Math.max(0, a), background: outside(dim) }} />
+      <div className="absolute inset-y-0 right-0" style={{ left: Math.min(width, b), background: outside(dim) }} />
       <div
         className="absolute inset-y-0"
         style={{
           left: a,
           width: w,
-          borderLeft: `2px solid ${RANGE_COLOR}`,
-          borderRight: `2px solid ${RANGE_COLOR}`,
-          background: grips ? `color-mix(in oklab, ${RANGE_COLOR} ${draft ? 18 : 12}%, transparent)` : undefined,
+          borderLeft: `2px solid ${EDGE}`,
+          borderRight: `2px solid ${EDGE}`,
+          background: grips ? `color-mix(in oklab, ${EDGE} ${draft ? 18 : 12}%, transparent)` : undefined,
           opacity: draft ? 0.85 : 1,
         }}
       />
       {grips && (
         <>
-          <div className="absolute top-1/2 h-2.5 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-[2px]" style={{ left: a + 1, background: RANGE_COLOR }} />
-          <div className="absolute top-1/2 h-2.5 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-[2px]" style={{ left: b - 1, background: RANGE_COLOR }} />
+          <div className="absolute top-1/2 h-2.5 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-[2px]" style={{ left: a + 1, background: EDGE }} />
+          <div className="absolute top-1/2 h-2.5 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-[2px]" style={{ left: b - 1, background: EDGE }} />
         </>
       )}
       {label && (
         <div
-          className="absolute top-0 whitespace-nowrap rounded-sm bg-[#1b1b1c]/90 px-1 font-mono text-[10px] leading-[14px]"
-          style={{ ...labelStyle, color: RANGE_COLOR }}
+          className="absolute top-0 whitespace-nowrap rounded-sm px-1 font-mono text-[10px] leading-[14px]"
+          style={{ ...labelStyle, color: EDGE, background: "color-mix(in srgb, var(--range-label) 90%, transparent)" }}
         >
           {text}
         </div>

@@ -50,6 +50,21 @@
   --animate-update-halo: update-halo 2.4s ease-out 4;
   /* IndexingSweep: while a file is being indexed after opening */
   --animate-indexing: indexing-sweep 1.6s ease-in-out infinite;
+  /* The log surface (rows, minimap, thread lanes): its own light and dark set, see
+     `.log-dark` below and lib/theme.ts */
+  --color-log: var(--log-bg);
+  --color-log-panel: var(--log-panel);
+  --color-log-fg: var(--log-fg);
+  /* lines, hover washes and outlines on the log surface (white on dark, ink on paper) */
+  --color-log-ink: var(--log-ink);
+  --color-log-dim: var(--log-dim);
+  --color-log-faint: var(--log-faint);
+  --color-log-field: var(--log-field);
+  --color-log-domain: var(--log-domain);
+  --color-log-thread: var(--log-thread);
+  --color-log-process: var(--log-process);
+  /* hover tooltips over the minimap and lanes: dark in both themes */
+  --color-log-tip: var(--log-tip);
 }
 
 /* A soft band crossing a bar from left to right */
@@ -110,6 +125,46 @@
   --sidebar-ring: oklch(0.708 0 0);
   --update: #d9481f;
   --update-foreground: #fff8f0;
+
+  /* Light log surface: warm paper with ink, from the logo (paper #f3eadb, ink #2a211b) */
+  --log-bg: #fbf8f2;
+  --log-panel: #f1eadf;
+  --log-fg: #2a211b;
+  --log-ink: #2a211b;
+  --log-dim: #9b9087;
+  --log-faint: #b7ada3;
+  --log-field: #75695f;
+  --log-domain: #2f68a8;
+  --log-thread: #7449a6;
+  --log-process: #1d7a70;
+  --log-tip: #2a211b;
+  /* time range: edges and grips, the wash outside it, and its label background */
+  --range: #2a211b;
+  --range-outside: #f1eadf;
+  --range-label: #f1eadf;
+  /* matched text: the filter's marker band and the search's solid mark */
+  --mark-filter: rgb(250 204 21 / 0.34);
+  --mark-filter-line: rgb(202 138 4 / 0.9);
+}
+
+/* Dark log surface (the original look) */
+.log-dark {
+  --log-bg: #1e1e1e;
+  --log-panel: #252526;
+  --log-fg: #ffffff;
+  --log-ink: #ffffff;
+  --log-dim: oklch(55.1% 0.027 264.364);
+  --log-faint: oklch(44.6% 0.03 256.802);
+  --log-field: oklch(70.7% 0.022 261.325);
+  --log-domain: oklch(70.7% 0.165 254.624);
+  --log-thread: oklch(81.1% 0.111 293.571);
+  --log-process: oklch(85.5% 0.138 181.071);
+  --log-tip: #000000;
+  --range: #f3eadb;
+  --range-outside: #000000;
+  --range-label: #1b1b1c;
+  --mark-filter: rgb(250 204 21 / 0.26);
+  --mark-filter-line: rgb(250 204 21 / 0.85);
 }
 
 .dark {
@@ -161,10 +216,10 @@
    keywords and regular expressions, and the search panel's text, which wins where
    both overlap. */
 mark.mark-filter {
-  background: rgb(250 204 21 / 0.26);
+  background: var(--mark-filter);
   color: inherit;
   border-radius: 2px;
-  box-shadow: inset 0 -1.5px rgb(250 204 21 / 0.85);
+  box-shadow: inset 0 -1.5px var(--mark-filter-line);
 }
 mark.mark-search {
   background: #f59e0b;

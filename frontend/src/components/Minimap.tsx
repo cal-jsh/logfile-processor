@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { colorMap, groupColors, OTHER_GROUP_COLOR } from "../lib/colorMap";
+import { colorMap, groupColors, NO_LEVEL_COLOR, OTHER_GROUP_COLOR } from "../lib/colorMap";
+import { useTheme } from "../lib/theme";
 import { RangeShade, rangeCursor, useTimeRangeDrag, type TimeRange } from "./TimeRangeSelect";
 import { IndexingSweep } from "./IndexingSweep";
 
@@ -36,9 +37,10 @@ const LABEL_SPACING = 120; // css px between time labels, roughly
 
 /** Level codes of the /minimap API, in severity order */
 const CODE_LEVEL = [null, "OTHER", "TRACE", "DEBUG", "INFO", "WARN", "ERROR", "CRITICAL"] as const;
-const CODE_COLOR: (string | null)[] = [
+/** Colours of the codes, from the palette of the theme in effect */
+const codeColors = (): (string | null)[] => [
   null,
-  "#6b6b6b",
+  NO_LEVEL_COLOR,
   colorMap.TRACE,
   colorMap.DEBUG,
   colorMap.INFO,
@@ -146,7 +148,7 @@ function paint(ctx: CanvasRenderingContext2D, codes: number[], colors: (string |
 type Legend = { names: (string | null)[]; colors: (string | null)[] };
 
 function legendOf(d: MinimapData): Legend {
-  if (d.color === "level" || !d.categories) return { names: [...CODE_LEVEL], colors: CODE_COLOR };
+  if (d.color === "level" || !d.categories) return { names: [...CODE_LEVEL], colors: codeColors() };
   const names: (string | null)[] = [null, ...d.categories.map((g) => g.name)];
   const colors: (string | null)[] = [null, ...groupColors(d.categories.map((g) => g.name))];
   if (d.other_code != null) {
@@ -192,7 +194,9 @@ export function Minimap({
 
   // data of the other axis is never drawn (it arrives a moment after a switch)
   const data = fetched && fetched.axis === axis && fetched.color === color ? fetched : null;
-  const legend = useMemo(() => (data ? legendOf(data) : null), [data]);
+  const theme = useTheme();
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- the palette changes with the theme
+  const legend = useMemo(() => (data ? legendOf(data) : null), [data, theme]);
   const timeAxis = data?.axis === "time" && data.time_start_ms != null && data.time_end_ms != null;
   const t0 = data?.time_start_ms ?? 0;
   const t1 = data?.time_end_ms ?? 0;
@@ -381,11 +385,11 @@ export function Minimap({
   const ticks = timeAxis ? timeTicks(t0, t1, cssWidth) : [];
 
   return (
-    <div className="shrink-0 select-none border-b border-white/10" style={{ background: "#252526" }}>
+    <div className="shrink-0 select-none border-b border-log-ink/10 bg-log-panel">
       {/* time scale */}
       {axis === "time" && (
         <div
-          className="relative touch-none overflow-hidden border-b border-white/5"
+          className="relative touch-none overflow-hidden border-b border-log-ink/5"
           style={{ height: AXIS_HEIGHT }}
           onPointerDown={onScaleDown}
           onPointerMove={onScaleMove}
@@ -401,18 +405,18 @@ export function Minimap({
             if (x > cssWidth - (label.length * 6 + 8)) return null;
             return (
               <div key={t} className="absolute top-0 h-full" style={{ left: x }}>
-                <div className="absolute bottom-0 h-1 w-px bg-white/30" />
-                <div data-tick className="absolute left-1 top-0 whitespace-nowrap font-mono text-[10px] leading-[14px] text-white/55">
+                <div className="absolute bottom-0 h-1 w-px bg-log-ink/30" />
+                <div data-tick className="absolute left-1 top-0 whitespace-nowrap font-mono text-[10px] leading-[14px] text-log-fg/55">
                   {label}
                 </div>
               </div>
             );
           })}
           {data && !timeAxis && (
-            <div className="px-3 text-[10px] leading-[16px] text-white/50">No timestamps found in this file</div>
+            <div className="px-3 text-[10px] leading-[16px] text-log-fg/50">No timestamps found in this file</div>
           )}
           {shownRange && <RangeShade range={shownRange} vf={t0} vt={t1} width={cssWidth} grips label draft={!!range.draft} />}
-          {hover && canSelect && <div className="pointer-events-none absolute inset-y-0 w-px bg-white/40" style={{ left: hover.x }} />}
+          {hover && canSelect && <div className="pointer-events-none absolute inset-y-0 w-px bg-log-ink/40" style={{ left: hover.x }} />}
         </div>
       )}
 
@@ -441,7 +445,7 @@ export function Minimap({
         {!fetched && (loading || !pxWidth) && (
           <div className="pointer-events-none absolute inset-0 overflow-hidden">
             <IndexingSweep />
-            <div className="absolute inset-y-0 left-3 flex items-center font-mono text-[10px] text-white/45">Indexing…</div>
+            <div className="absolute inset-y-0 left-3 flex items-center font-mono text-[10px] text-log-fg/45">Indexing…</div>
           </div>
         )}
 
@@ -449,16 +453,16 @@ export function Minimap({
 
         {box && (
           <div
-            className="pointer-events-none absolute inset-y-0 z-[6] rounded-[2px] border border-white/80 bg-white/10 shadow-[0_0_0_1px_rgba(0,0,0,0.6)]"
+            className="pointer-events-none absolute inset-y-0 z-[6] rounded-[2px] border border-log-ink/80 bg-log-ink/10 shadow-[0_0_0_1px_color-mix(in_srgb,var(--range-outside)_60%,transparent)]"
             style={{ left: box.left, width: box.width }}
           />
         )}
 
         {hover && (
           <>
-            <div className="pointer-events-none absolute inset-y-0 z-[6] w-px bg-white/70" style={{ left: hover.x }} />
+            <div className="pointer-events-none absolute inset-y-0 z-[6] w-px bg-log-ink/70" style={{ left: hover.x }} />
             <div
-              className="pointer-events-none absolute top-1/2 z-10 -translate-y-1/2 whitespace-nowrap rounded bg-black/85 px-1.5 py-0.5 font-mono text-[10px] text-white shadow"
+              className="pointer-events-none absolute top-1/2 z-10 -translate-y-1/2 whitespace-nowrap rounded bg-log-tip/85 px-1.5 py-0.5 font-mono text-[10px] text-white shadow"
               style={hover.x > cssWidth - 260 ? { right: cssWidth - hover.x + 6 } : { left: hover.x + 6 }}
             >
               {hover.time != null && <span className="mr-1.5 text-white/75">{formatFull(hover.time)}</span>}
@@ -473,7 +477,7 @@ export function Minimap({
         )}
 
         {!data && (
-          <div className="pointer-events-none absolute inset-0 flex items-center px-3 text-[11px] text-white/50">
+          <div className="pointer-events-none absolute inset-0 flex items-center px-3 text-[11px] text-log-fg/50">
             {loading ? "Building minimap…" : ""}
           </div>
         )}
@@ -508,11 +512,11 @@ function MinimapLegend({ data, legend, highlight }: { data: MinimapData; legend:
   }
   return (
     <div
-      className="flex h-[18px] items-center gap-3 overflow-hidden whitespace-nowrap border-t border-white/5 px-2 font-mono text-[10px] text-white/65"
+      className="flex h-[18px] items-center gap-3 overflow-hidden whitespace-nowrap border-t border-log-ink/5 px-2 font-mono text-[10px] text-log-fg/65"
       aria-label="Minimap colours"
     >
       {items.map((it) => (
-        <span key={it.key} title={it.title} className={highlight === it.key ? "flex items-center gap-1 text-white" : "flex items-center gap-1"}>
+        <span key={it.key} title={it.title} className={highlight === it.key ? "flex items-center gap-1 text-log-fg" : "flex items-center gap-1"}>
           <span className="inline-block size-2 shrink-0 rounded-[2px]" style={{ background: it.color }} />
           {it.name}
         </span>
