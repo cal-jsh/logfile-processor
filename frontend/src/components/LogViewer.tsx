@@ -141,6 +141,7 @@ export const LogViewer = ({
   lanesField,
   searchOpen,
   onSearchOpenChange,
+  statusStart,
 }: {
   baseUrl: string;
   sessionId: string;
@@ -165,6 +166,8 @@ export const LogViewer = ({
   /** The floating "Search & go to line" panel */
   searchOpen: boolean;
   onSearchOpenChange: (open: boolean) => void;
+  /** Shown at the start of the status bar (the active filters while the filter panel is hidden) */
+  statusStart?: React.ReactNode;
 }) => {
   const viewParams = `session_id=${encodeURIComponent(sessionId)}${filterParams}&context=${context}`;
 
@@ -315,6 +318,8 @@ export const LogViewer = ({
   }, [maxTop, visibleRows]);
 
   const onKeyDown = (e: React.KeyboardEvent) => {
+    // Ctrl+arrows show and hide the panels (handled by the dashboard)
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
     const step: Record<string, number> = {
       ArrowDown: 1,
       ArrowUp: -1,
@@ -618,6 +623,7 @@ export const LogViewer = ({
 
       {/* Status bar + exports */}
       <div className="flex items-center gap-2 border-b bg-muted/30 px-3 py-1">
+        {statusStart}
         <div role="status" className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
           {error
             ? `Error: ${error}`
