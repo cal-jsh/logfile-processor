@@ -653,6 +653,8 @@ export const LogViewer = ({
   // rows are loading, the last known range is kept
   const lastRow = Math.min(rowCount - 1, firstRow + visibleRows - 1);
   const visibleRef = useRef<VisibleRange | null>(null);
+  // the thread lanes' zoomed time window (null: whole file), marked on the minimap
+  const [lanesWindow, setLanesWindow] = useState<TimeRange | null>(null);
   if (rowCount > 0) {
     const ra = getRow(firstRow);
     const rb = getRow(lastRow);
@@ -816,6 +818,7 @@ export const LogViewer = ({
           onJumpToLine={jumpToLine}
           timeRange={timeRange}
           onTimeRangeChange={onTimeRangeChange}
+          lanesWindow={lanesField ? lanesWindow : null}
         />
       )}
 
@@ -826,6 +829,7 @@ export const LogViewer = ({
           filterParams={filterParams}
           field={lanesField.name}
           fieldLabel={lanesField.label}
+          onViewChange={setLanesWindow}
           visible={visibleRef.current}
           onJumpToLine={jumpToLine}
           timeRange={timeRange}

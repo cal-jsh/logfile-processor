@@ -4,6 +4,8 @@ import { colorMap, NO_LEVEL_COLOR } from "../lib/colorMap";
 import { useTheme } from "../lib/theme";
 import { formatFull, timeTicks, type VisibleRange } from "./Minimap";
 import { RangeShade, rangeCursor, useTimeRangeDrag, type TimeRange } from "./TimeRangeSelect";
+import { IndexingSweep } from "./IndexingSweep";
+import { END_W, LABEL_W } from "./plotColumns";
 
 /*
  * Swimlanes of thread activity: one lane per thread, a shared time axis, and every log
@@ -30,7 +32,6 @@ import { RangeShade, rangeCursor, useTimeRangeDrag, type TimeRange } from "./Tim
 
 const LANE_H = 14; // css px per lane
 const MARK_PAD = 2; // css px above and below the marks in a lane
-const LABEL_W = 132; // css px, lane names
 const AXIS_H = 18;
 const MIN_SPAN = 50; // ms, deepest zoom
 const DEFAULT_HEIGHT = 168;
@@ -138,6 +139,7 @@ export function ThreadLanes({
   onJumpToLine,
   timeRange,
   onTimeRangeChange,
+  onViewChange,
 }: {
   baseUrl: string;
   sessionId: string;
@@ -150,6 +152,8 @@ export function ThreadLanes({
   /** The time range filter, if any */
   timeRange: TimeRange | null;
   onTimeRangeChange: (r: TimeRange | null) => void;
+  /** The zoomed time window (null: the whole file), for the minimap's marker */
+  onViewChange?: (w: TimeRange | null) => void;
 }) {
   const panelRef = useRef<HTMLDivElement>(null);
   const areaRef = useRef<HTMLDivElement>(null);
@@ -176,6 +180,14 @@ export function ThreadLanes({
 
   // back to the whole file for another file or field
   useEffect(() => setView(null), [sessionId, field]);
+
+  // tell the minimap which window is zoomed in; nothing once the lanes are gone
+  const viewFrom = view?.from;
+  const viewTo = view?.to;
+  useEffect(() => {
+    onViewChange?.(viewFrom != null && viewTo != null ? { from: viewFrom, to: viewTo } : null);
+  }, [viewFrom, viewTo, onViewChange]);
+  useEffect(() => () => onViewChange?.(null), [onViewChange]);
 
   /* width: redraw at once, refetch after resizing settles */
   useEffect(() => {
@@ -528,10 +540,12 @@ export function ThreadLanes({
           )}
           {shownRange && <RangeShade range={shownRange} vf={vf} vt={vt} width={cssWidth} grips label draft={!!range.draft} />}
         </div>
+        {/* above the lanes' scrollbar, so the scale ends where the lanes do */}
+        <div className="shrink-0" style={{ width: END_W }} />
       </div>
 
       {/* lanes: names and marks scroll together */}
-      <div className="overflow-y-auto overflow-x-hidden" style={{ maxHeight: height }}>
+      <div className="lanes-scroll overflow-y-auto overflow-x-hidden" style={{ maxHeight: height }}>
         <div className="flex" style={{ height: Math.max(laneCount * LANE_H, 2 * LANE_H) }}>
           <div className="shrink-0 border-r border-log-ink/5" style={{ width: LABEL_W }}>
             {names.map((n, i) => (
@@ -578,8 +592,10 @@ export function ThreadLanes({
               </>
             )}
             {!data && (
-              <div className="pointer-events-none absolute inset-0 flex items-center px-3 text-[11px] text-log-fg/50" style={{ height: LANE_H * 2 }}>
-                {error ? `Thread lanes unavailable: ${error}` : loading ? "Building thread lanes…" : ""}
+              <div className="pointer-events-none absolute inset-x-0 top-0 flex items-center overflow-hidden px-3 text-[11px] text-log-fg/50" style={{ height: LANE_H * 2 }}>
+                {/* first load: the same sweep as the minimap while the file is indexed */}
+                {!error && !fetched && (loading || !pxWidth) && <IndexingSweep />}
+                <span className="relative">{error ? `Thread lanes unavailable: ${error}` : loading || !pxWidth ? "Building thread lanes…" : ""}</span>
               </div>
             )}
             {data && (!hasTime || laneCount === 0) && (
@@ -608,7 +624,7 @@ export function ThreadLanes({
           className="pointer-events-none absolute z-20 max-w-[min(640px,70%)] rounded bg-log-tip/90 px-1.5 py-1 font-mono text-[10px] text-white shadow"
           style={{
             top: Math.max(0, hover.y + 12),
-            ...(hover.x > cssWidth / 2 ? { right: cssWidth - hover.x + 8 } : { left: LABEL_W + hover.x + 8 }),
+            ...(hover.x > cssWidth / 2 ? { right: cssWidth - hover.x + END_W + 8 } : { left: LABEL_W + hover.x + 8 }),
           }}
         >
           <div className="whitespace-nowrap">
