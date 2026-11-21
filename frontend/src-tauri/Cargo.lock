@@ -2243,7 +2243,7 @@ checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
 
 [[package]]
 name = "logfile_processor"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "axum",
  "memchr",
@@ -2264,7 +2264,7 @@ dependencies = [
 
 [[package]]
 name = "logfile_processor_desktop"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "axum",
  "logfile_processor",
