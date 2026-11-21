@@ -6,9 +6,9 @@
 A fast log viewer for Windows and Linux, for files of many gigabytes. Open a log in place, filter it
 by level, domain, thread or keyword, and see where things happen across the whole file.
 
-![Opening a 5 GB log, filtering by level and keyword, minimap and thread lanes](docs/demo.gif)
+![Opening a 5 GB log, filtering to CRITICAL with a regex, jumping to a time, picking a time range on the minimap, zoomed thread lanes and the light theme](docs/demo.gif)
 
-_A 5 GB, 52 million line log: opened in about 3 seconds, filters in a fraction of a second._
+_A 5 GB, 52 million line log: rows on screen in under a second, filters in a fraction of a second._
 
 ## Features
 
