@@ -1,7 +1,7 @@
 ### Install
 
 ```shell
-npm install --legacy-peer-deps
+npm install
 ```
 
 ### Run the desktop app (Vite dev server + app window)

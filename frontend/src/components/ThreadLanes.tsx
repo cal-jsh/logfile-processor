@@ -31,8 +31,8 @@ const DEFAULT_HEIGHT = 168;
 const MAX_BUCKETS = 16384;
 
 /** Level codes of the API (as the minimap) */
-const CODE_LEVEL = [null, "OTHER", "TRACE", "DEBUG", "INFO", "WARN", "ERROR"] as const;
-const CODE_COLOR: (string | null)[] = [null, "#6b6b6b", colorMap.TRACE, colorMap.DEBUG, colorMap.INFO, colorMap.WARN, colorMap.ERROR];
+const CODE_LEVEL = [null, "OTHER", "TRACE", "DEBUG", "INFO", "WARN", "ERROR", "CRITICAL"] as const;
+const CODE_COLOR: (string | null)[] = [null, "#6b6b6b", colorMap.TRACE, colorMap.DEBUG, colorMap.INFO, colorMap.WARN, colorMap.ERROR, colorMap.CRITICAL];
 
 type Lane = { name: string; lines: number };
 
@@ -54,7 +54,7 @@ type LanesData = {
   window_lines: number;
 };
 
-/** One digit per column, per lane: dominant level, an ERROR/WARN that does not dominate,
+/** One digit per column, per lane: dominant level, a CRITICAL/ERROR/WARN that does not dominate,
     and the number of lines (1..9, log scale) */
 type Encoded = { levels: string[]; alerts: string[]; density: string[] };
 

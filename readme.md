@@ -107,7 +107,7 @@ sudo apt install build-essential curl file pkg-config libssl-dev libxdo-dev   li
 From `frontend/`:
 
 ```powershell
-npm install --legacy-peer-deps   # once
+npm install   # once
 npm run desktop                  # dev run: Vite dev server + app window
 npm run desktop:build            # release exe + installers for this system
 ```

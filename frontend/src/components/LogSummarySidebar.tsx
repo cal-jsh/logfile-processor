@@ -302,7 +302,7 @@ export default function LogSummarySidebar({
               {levelCounts.map(({ level, count }) => (
                 <div key={level} className="flex items-center gap-2 py-0.5 text-xs">
                   <span className="size-2 shrink-0 rounded-full" style={{ background: colorMap[level] }} />
-                  <span className="w-12 font-medium">{level}</span>
+                  <span className="w-16 font-medium">{level}</span>
                   <span className="ml-auto font-mono tabular-nums">{count.toLocaleString()}</span>
                   <span className="w-10 text-right font-mono tabular-nums text-muted-foreground">
                     {levelTotal > 0 ? `${Math.round((count / levelTotal) * 100)}%` : ""}

@@ -104,7 +104,7 @@ struct Cell {
 }
 
 /// Level codes counted per cell (`code::NONE` is never counted).
-const LEVELS: usize = code::ERROR as usize + 1;
+const LEVELS: usize = code::MAX as usize + 1;
 
 /// Cells of one pass over some lines; consecutive lines of a lane in the same slice
 /// update one cell.
@@ -312,7 +312,7 @@ impl LaneBins {
 pub struct LaneColumns {
     /// The level with the most lines (ties to the more severe one), [`code::NONE`] if empty
     pub dominant: Vec<u8>,
-    /// [`code::ERROR`] or [`code::WARN`] if the column has such lines but another level
+    /// [`code::CRITICAL`], [`code::ERROR`] or [`code::WARN`] if the column has such lines but another level
     /// dominates, else [`code::NONE`]; so a single error stays visible in a busy column
     pub alert: Vec<u8>,
     /// Lines (counts saturate per slice, see [`LaneBins`])
@@ -329,7 +329,7 @@ fn dominant_and_alert(c: &[u32; LEVELS]) -> (u8, u8) {
             d = l as u8;
         }
     }
-    let worst = [code::ERROR, code::WARN].into_iter().find(|&l| c[l as usize] > 0).unwrap_or(code::NONE);
+    let worst = [code::CRITICAL, code::ERROR, code::WARN].into_iter().find(|&l| c[l as usize] > 0).unwrap_or(code::NONE);
     (d, if worst > d { worst } else { code::NONE })
 }
 

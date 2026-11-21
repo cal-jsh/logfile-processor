@@ -28,7 +28,7 @@ const MAX_BUCKETS = 16384; // backend limit
 const LABEL_SPACING = 120; // css px between time labels, roughly
 
 /** Level codes of the /minimap API, in severity order */
-const CODE_LEVEL = [null, "OTHER", "TRACE", "DEBUG", "INFO", "WARN", "ERROR"] as const;
+const CODE_LEVEL = [null, "OTHER", "TRACE", "DEBUG", "INFO", "WARN", "ERROR", "CRITICAL"] as const;
 const CODE_COLOR: (string | null)[] = [
   null,
   "#6b6b6b",
@@ -37,6 +37,7 @@ const CODE_COLOR: (string | null)[] = [
   colorMap.INFO,
   colorMap.WARN,
   colorMap.ERROR,
+  colorMap.CRITICAL,
 ];
 
 type Group = { name: string; lines: number };

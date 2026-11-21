@@ -31,14 +31,20 @@ pub mod code {
     pub const INFO: u8 = 4;
     pub const WARN: u8 = 5;
     pub const ERROR: u8 = 6;
+    pub const CRITICAL: u8 = 7;
+    /// The most severe code
+    pub const MAX: u8 = CRITICAL;
 }
 
 /// Severity code of a level name. Common aliases (and spdlog's one-letter `%L` names)
-/// map to the five known levels.
+/// map to the six known levels. CRITICAL (and FATAL) is its own level above ERROR, as
+/// in the level filter, so the summary, minimap and lanes agree with the filter chips.
 pub fn level_code(level: &str) -> u8 {
     let l = level.trim();
     let is = |s: &str| l.eq_ignore_ascii_case(s);
-    if is("ERROR") || is("ERR") || is("FATAL") || is("CRITICAL") || is("CRIT") || is("SEVERE") || is("E") || is("C") || is("F") {
+    if is("CRITICAL") || is("CRIT") || is("FATAL") || is("C") || is("F") {
+        code::CRITICAL
+    } else if is("ERROR") || is("ERR") || is("SEVERE") || is("E") {
         code::ERROR
     } else if is("WARN") || is("WARNING") || is("W") {
         code::WARN
@@ -198,7 +204,7 @@ impl LevelIndex {
                 let mut j = ranges.partition_point(|r| r.1 <= bs);
                 let mut m = code::NONE;
                 while let Some(&(s, e)) = ranges.get(j) {
-                    if s >= be || m == code::ERROR {
+                    if s >= be || m == code::MAX {
                         break;
                     }
                     m = m.max(self.max_in(s.max(bs), e.min(be)));
@@ -214,7 +220,7 @@ impl LevelIndex {
 mod tests {
     use super::*;
 
-    const NAMES: [&str; 7] = ["", "CUSTOM", "TRACE", "DEBUG", "INFO", "WARN", "ERROR"];
+    const NAMES: [&str; 8] = ["", "CUSTOM", "TRACE", "DEBUG", "INFO", "WARN", "ERROR", "CRITICAL"];
 
     struct Lcg(u64);
     impl Lcg {
@@ -259,7 +265,28 @@ mod tests {
         assert_eq!(level_code("Info"), code::INFO);
         assert_eq!(level_code("FOO"), code::OTHER);
         assert_eq!(level_code("W"), code::WARN);
-        assert_eq!(level_code("critical"), code::ERROR);
+        assert_eq!(level_code("E"), code::ERROR);
+        assert_eq!(level_code("SEVERE"), code::ERROR);
+    }
+
+    #[test]
+    fn critical_is_its_own_level_above_error() {
+        for name in ["critical", "CRITICAL", "Crit", "C", "FATAL", "f"] {
+            assert_eq!(level_code(name), code::CRITICAL, "{name}");
+        }
+        assert!(code::CRITICAL > code::ERROR);
+        // fits the half byte per line of the packed index
+        assert!(code::MAX < 16);
+
+        // a CRITICAL line is the most severe in its bucket, and kept apart from ERROR
+        let mut codes = vec![code::INFO; 300];
+        codes[10] = code::ERROR;
+        codes[200] = code::CRITICAL;
+        let idx = LevelIndex::build(&file_of(&codes, 64), &legacy());
+        assert_eq!(idx.code(10), code::ERROR);
+        assert_eq!(idx.code(200), code::CRITICAL);
+        assert_eq!(idx.buckets(3), [code::ERROR, code::INFO, code::CRITICAL]);
+        assert_eq!(idx.buckets_in(3, &[(0, 300)]), [code::ERROR, code::INFO, code::CRITICAL]);
     }
 
     #[test]
@@ -270,10 +297,10 @@ mod tests {
             // runs of one level, like real logs, plus single outliers
             let mut codes = Vec::with_capacity(len);
             while codes.len() < len {
-                let c = (rng.next() % 7) as u8;
+                let c = (rng.next() % 8) as u8;
                 let run = 1 + rng.next() % 300;
                 for _ in 0..run.min((len - codes.len()) as u64) {
-                    codes.push(if rng.next() % 50 == 0 { (rng.next() % 7) as u8 } else { c });
+                    codes.push(if rng.next() % 50 == 0 { (rng.next() % 8) as u8 } else { c });
                 }
             }
             let chunk_size = [37, 500, 4096, 1 << 20][case % 4];

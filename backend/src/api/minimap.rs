@@ -4,8 +4,8 @@
 //! `GET /minimap?session_id=..&buckets=N[&levels=..&fields=..&keywords=..]` splits the
 //! file's lines into `N` equal buckets and returns the most severe level code in each
 //! (see [`crate::logfile::levels::code`]): `0` no log line, `1` other level, `2` TRACE,
-//! `3` DEBUG, `4` INFO, `5` WARN, `6` ERROR. Taking the most severe level keeps a single
-//! ERROR visible in a bucket of a million INFO lines.
+//! `3` DEBUG, `4` INFO, `5` WARN, `6` ERROR, `7` CRITICAL. Taking the most severe level
+//! keeps a single ERROR visible in a bucket of a million INFO lines.
 //!
 //! With a filter, `matched` holds the same aggregation over the matching lines only
 //! (context lines are not counted), while `all` still describes the whole file. The
