@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { Maximize2, ZoomIn, ZoomOut } from "lucide-react";
+import { Focus, Maximize2, ZoomIn, ZoomOut } from "lucide-react";
 import { colorMap } from "../lib/colorMap";
 import { formatFull, timeTicks, type VisibleRange } from "./Minimap";
+import { RangeShade, rangeCursor, useTimeRangeDrag, type TimeRange } from "./TimeRangeSelect";
 
 /*
  * Swimlanes of thread activity: one lane per thread, a shared time axis, and every log
@@ -13,13 +14,17 @@ import { formatFull, timeTicks, type VisibleRange } from "./Minimap";
  * each, in name order; the rest share an "other" lane at the bottom. More lanes than fit
  * scroll vertically; the panel height can be dragged.
  *
- * Zoom: Ctrl+wheel or the buttons; drag to pan, Shift+wheel too. The backend re-bins the
+ * Zoom: Ctrl+wheel or the buttons; Shift+drag (or the middle button) to pan, Shift+wheel too. The backend re-bins the
  * zoomed window from the lines in it, so zooming in shows finer detail, not bigger pixels.
  * While the new window loads, the previous one is drawn stretched.
  *
  * Hover shows the time, the thread and the first line of that thread under the pointer;
  * click jumps there. With a filter, all lines stay as a dim background and the matching
  * lines are drawn on top. The box marks the time range on screen.
+ *
+ * Time range filter, as on the minimap: drag on the lanes or their time scale to filter
+ * to a range (a click jumps), drag its edges to change it, drag it on the scale to move it.
+ * Double-click the scale or the lanes to clear the range and show the whole file again.
  */
 
 const LANE_H = 14; // css px per lane
@@ -128,6 +133,8 @@ export function ThreadLanes({
   fieldLabel,
   visible,
   onJumpToLine,
+  timeRange,
+  onTimeRangeChange,
 }: {
   baseUrl: string;
   sessionId: string;
@@ -137,6 +144,9 @@ export function ThreadLanes({
   fieldLabel: string;
   visible: VisibleRange | null;
   onJumpToLine: (line: number) => void;
+  /** The time range filter, if any */
+  timeRange: TimeRange | null;
+  onTimeRangeChange: (r: TimeRange | null) => void;
 }) {
   const panelRef = useRef<HTMLDivElement>(null);
   const areaRef = useRef<HTMLDivElement>(null);
@@ -318,14 +328,57 @@ export function ThreadLanes({
     return { x, y: e.clientY - panel.top, lane: Math.min(Math.max(lane, 0), Math.max(0, laneCount - 1)) };
   };
 
+  /* time range: drag on the scale, Shift+drag or an edge on the lanes */
+  const areaRect = () => areaRef.current!.getBoundingClientRect();
+  const range = useTimeRangeDrag({
+    range: hasTime ? timeRange : null,
+    onChange: onTimeRangeChange,
+    timeAt: (clientX) => {
+      const r = areaRect();
+      return vf + ((clientX - r.left) / r.width) * (vt - vf);
+    },
+    xOf: (t) => {
+      const r = areaRect();
+      return r.left + ((t - vf) / (vt - vf)) * r.width;
+    },
+    bounds: [t0, t1],
+  });
+  const shownRange = hasTime ? range.draft ?? timeRange : null;
+  // double-click on the scale or the lanes: the whole file again, without the time range
+  const showAll = () => {
+    setView(null);
+    if (timeRange) onTimeRangeChange(null);
+  };
+  const onScaleDown = (e: React.PointerEvent) => {
+    if (e.button !== 0 || !hasTime || !areaRef.current) return;
+    range.begin(e, true);
+  };
+  const onScaleMove = (e: React.PointerEvent) => {
+    if (!hasTime || !areaRef.current || range.move(e)) return;
+    (e.currentTarget as HTMLElement).style.cursor = rangeCursor(range.hit(e.clientX), true) ?? "";
+  };
+
   const drag = useRef<{ x: number; moved: boolean } | null>(null);
+  // a plain drag selects a time range (a click jumps); Shift+drag or the middle button pans
   const onPointerDown = (e: React.PointerEvent) => {
-    if (e.button !== 0 || !hasTime) return;
+    if (!hasTime || (e.button !== 0 && e.button !== 1)) return;
+    if (e.button === 0 && !e.shiftKey) {
+      range.begin(e, false);
+      return;
+    }
+    e.preventDefault(); // no autoscroll on the middle button
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     drag.current = { x: e.clientX, moved: false };
   };
   const onPointerMove = (e: React.PointerEvent) => {
     if (!data || !hasTime) return;
+    if (range.dragging() && range.move(e) && range.draft) {
+      setHover(null);
+      return;
+    }
+    const h = range.hit(e.clientX);
+    (e.currentTarget as HTMLElement).style.cursor =
+      h === "from" || h === "to" ? "ew-resize" : drag.current ? "grabbing" : e.shiftKey && view ? "grab" : "crosshair";
     const d = drag.current;
     if (d) {
       const dx = e.clientX - d.x;
@@ -350,9 +403,15 @@ export function ThreadLanes({
     }, 90);
   };
   const onPointerUp = (e: React.PointerEvent) => {
+    let click = false;
+    if (range.dragging()) {
+      if (range.end()) return;
+      click = true;
+    }
     const d = drag.current;
     drag.current = null;
-    if (!d || d.moved || !data) return;
+    if (!click && (!d || d.moved)) return;
+    if (!data) return;
     const p = pointAt(e);
     lookup(p.lane, p.x).then((at) => {
       if (at?.line) onJumpToLine(at.line);
@@ -424,8 +483,30 @@ export function ThreadLanes({
           <button type="button" title="Whole file" aria-label="Show the whole file" disabled={!view} onClick={() => setView(null)} className="rounded p-0.5 hover:bg-white/10 disabled:opacity-30">
             <Maximize2 className="size-3" />
           </button>
+          {timeRange && hasTime && (
+            <button
+              type="button"
+              title="Zoom to the time range filter"
+              aria-label="Zoom to the time range filter"
+              onClick={() => {
+                const pad = (timeRange.to - timeRange.from) * 0.05;
+                setView(clampView(timeRange.from - pad, timeRange.to + pad));
+              }}
+              className="rounded p-0.5 hover:bg-white/10"
+            >
+              <Focus className="size-3" />
+            </button>
+          )}
         </div>
-        <div className="relative min-w-0 flex-1 overflow-hidden" onDoubleClick={() => setView(null)} title={view ? "Double-click: whole file" : undefined}>
+        <div
+          className="relative min-w-0 flex-1 touch-none overflow-hidden"
+          onDoubleClick={showAll}
+          onPointerDown={onScaleDown}
+          onPointerMove={onScaleMove}
+          onPointerUp={() => range.dragging() && range.end()}
+          onPointerCancel={range.cancel}
+          title={hasTime ? `Drag to filter a time range${view || timeRange ? " · double-click: whole file, no time range" : ""}` : undefined}
+        >
           {ticks.map(({ t, label }) => {
             const x = ((t - vf) / (vt - vf)) * cssWidth;
             if (x > cssWidth - (label.length * 6 + 8)) return null;
@@ -441,6 +522,7 @@ export function ThreadLanes({
               {zoomFactor >= 10 ? Math.round(zoomFactor).toLocaleString() : zoomFactor.toFixed(1)}×
             </div>
           )}
+          {shownRange && <RangeShade range={shownRange} vf={vf} vt={vt} width={cssWidth} grips label draft={!!range.draft} />}
         </div>
       </div>
 
@@ -461,11 +543,15 @@ export function ThreadLanes({
           </div>
           <div
             ref={areaRef}
-            className={`relative min-w-0 flex-1 touch-none ${view ? "cursor-grab active:cursor-grabbing" : "cursor-pointer"}`}
+            className="relative min-w-0 flex-1 touch-none cursor-crosshair"
             onPointerDown={onPointerDown}
             onPointerMove={onPointerMove}
             onPointerUp={onPointerUp}
-            onPointerCancel={() => (drag.current = null)}
+            onPointerCancel={() => {
+              drag.current = null;
+              range.cancel();
+            }}
+            onDoubleClick={showAll}
             onPointerLeave={() => {
               clearTimeout(atTimer.current);
               setHover(null);
@@ -474,9 +560,10 @@ export function ThreadLanes({
             aria-label={`${fieldLabel} lanes over time, click to jump to a line`}
           >
             <canvas ref={canvasRef} className="absolute left-0 top-0 w-full" style={{ height: laneCount * LANE_H, imageRendering: "pixelated" }} />
+            {shownRange && <RangeShade range={shownRange} vf={vf} vt={vt} width={cssWidth} draft={!!range.draft} dim={0.3} />}
             {box && (
               <div
-                className="pointer-events-none absolute inset-y-0 rounded-[2px] border border-white/80 bg-white/10 shadow-[0_0_0_1px_rgba(0,0,0,0.6)]"
+                className="pointer-events-none absolute inset-y-0 z-[6] rounded-[2px] border border-white/80 bg-white/10 shadow-[0_0_0_1px_rgba(0,0,0,0.6)]"
                 style={{ left: box.left, width: box.width }}
               />
             )}

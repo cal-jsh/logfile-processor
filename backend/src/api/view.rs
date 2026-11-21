@@ -6,8 +6,8 @@
 //!   numbers, and expands them by `context` lines. It returns the row count.
 //! * `GET /view/rows` returns the text of a range of rows of that view.
 //! * `GET /view/matches` returns the match line numbers themselves.
-//! * `GET /view/row_of_line` and `/view/search` support jumping and searching inside
-//!   the results. Exporting them to a file is `export_view_to_file`, called by the
+//! * `GET /view/row_of_line`, `/view/row_of_time` and `/view/search` support jumping
+//!   and searching inside the results. Exporting them to a file is `export_view_to_file`, called by the
 //!   desktop app.
 //!
 //! Filter results are cached per session, so scrolling or changing `context` never
@@ -47,6 +47,7 @@ pub fn router() -> Router {
         .route("/view/rows", get(get_view_rows))
         .route("/view/matches", get(get_view_matches))
         .route("/view/row_of_line", get(get_row_of_line))
+        .route("/view/row_of_time", get(get_row_of_time))
         .route("/view/search", get(search_view))
         .route("/close_session", post(close_session))
 }
@@ -61,6 +62,12 @@ pub struct ViewQuery {
     pub levels: Option<String>,
     /// Comma-separated keywords; a line matches if its message contains any of them
     pub keywords: Option<String>,
+    /// Time range: only lines with a timestamp from `time_from` (included) to `time_to`
+    /// (excluded), ms since 1970 in the log's own clock; either end may be left open
+    pub time_from: Option<f64>,
+    pub time_to: Option<f64>,
+    /// `/view/row_of_time`: the time to go to, ms since 1970 in the log's own clock
+    pub time_ms: Option<f64>,
     /// Lines of context around each match (default 0)
     pub context: Option<u64>,
     pub first_row: Option<u64>,
@@ -79,6 +86,7 @@ pub struct ViewQuery {
 impl ViewQuery {
     fn filter(&self) -> Result<LineFilter, ApiError> {
         LineFilter::from_query(self.levels.as_deref(), self.fields.as_deref(), self.keywords.as_deref())
+            .and_then(|f| f.with_time_ms(self.time_from, self.time_to))
             .map_err(|e| ApiError(StatusCode::BAD_REQUEST, e))
     }
 }
@@ -304,6 +312,51 @@ pub async fn get_row_of_line(Query(q): Query<ViewQuery>) -> Result<Json<RowOfLin
     Ok(Json(RowOfLineResponse { row: r.view.row_of_line(line), row_count: r.view.row_count() }))
 }
 
+// ---------------------------------------------------------------- /view/row_of_time
+
+#[derive(Serialize)]
+pub struct RowOfTimeResponse {
+    /// First row showing the line found or a later one (`row_count` if none)
+    pub row: u64,
+    pub row_count: u64,
+    /// 1-based first file line at or after the time, `null` if no line is that late
+    pub line: Option<u64>,
+    /// That line's time (ms, log clock)
+    pub time_ms: Option<f64>,
+    /// 1-based file line shown at `row`: `line` itself, or a later one when the view's
+    /// filter leaves `line` out
+    pub row_line: Option<u64>,
+}
+
+/// Map a time to a row of the view: the first file line with that timestamp or a later
+/// one, then the first row at or after that line. Only the index chunk holding the time
+/// is read (its place is known from the level index).
+pub async fn get_row_of_time(Query(q): Query<ViewQuery>) -> Result<Json<RowOfTimeResponse>, ApiError> {
+    let t = q
+        .time_ms
+        .filter(|t| t.is_finite())
+        .ok_or_else(|| ApiError(StatusCode::BAD_REQUEST, "Missing time_ms".into()))?;
+    let r = resolve(&q).await?;
+    let (levels, _) = r.session.levels().await?;
+    let session = r.session.clone();
+    let t_ns = (t * 1e6).round() as i64;
+    let found = blocking(move || {
+        crate::logfile::timeline::first_line_at_or_after(&session.file, &levels, &session.format, t_ns)
+    })
+    .await?;
+    let row_count = r.view.row_count();
+    Ok(Json(match found {
+        Some((line, ts)) => RowOfTimeResponse {
+            row: r.view.row_of_line(line),
+            row_count,
+            line: Some(line + 1),
+            time_ms: Some(ts as f64 / 1e6),
+            row_line: r.view.line_of_row(r.view.row_of_line(line)).map(|l| l + 1),
+        },
+        None => RowOfTimeResponse { row: row_count, row_count, line: None, time_ms: None, row_line: None },
+    }))
+}
+
 // ---------------------------------------------------------------- /view/search
 
 #[derive(Serialize)]
@@ -507,19 +560,22 @@ pub fn write_view(
     out.flush()
 }
 
-/// Export the view of an open session (filter + context) to a local file.
+/// Export the view of an open session (filter + context) to a local file. `time` is the
+/// time range as `(time_from, time_to)` in ms, as in [`ViewQuery`].
+#[allow(clippy::too_many_arguments)]
 pub async fn export_view_to_file(
     session_id: &str,
     levels: Option<&str>,
     fields: Option<&str>,
     keywords: Option<&str>,
+    time: (Option<f64>, Option<f64>),
     context: u64,
     csv: bool,
     path: std::path::PathBuf,
 ) -> Result<u64, String> {
     let session = get_user_log(session_id).ok_or("Session ID not found")?;
     let (matches, _) = session
-        .matches(LineFilter::from_query(levels, fields, keywords)?)
+        .matches(LineFilter::from_query(levels, fields, keywords)?.with_time_ms(time.0, time.1)?)
         .await
         .map_err(|e| match e {
             QueryError::Cancelled => "Cancelled by a newer filter".to_string(),

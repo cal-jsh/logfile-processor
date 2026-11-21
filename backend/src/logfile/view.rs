@@ -127,7 +127,6 @@ impl View {
     }
 
     /// The file line shown at `row`.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn line_of_row(&self, row: u64) -> Option<u64> {
         if row >= self.row_count {
             return None;

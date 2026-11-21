@@ -91,6 +91,8 @@ async fn export_view(
     levels: Option<String>,
     fields: Option<String>,
     keywords: Option<String>,
+    time_from: Option<f64>,
+    time_to: Option<f64>,
     context: u64,
     format: String,
 ) -> Result<Option<String>, String> {
@@ -114,6 +116,7 @@ async fn export_view(
         levels.as_deref(),
         fields.as_deref(),
         keywords.as_deref(),
+        (time_from, time_to),
         context,
         csv,
         path.clone(),

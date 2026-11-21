@@ -3,11 +3,13 @@ import { Input } from "./ui/input";
 import { Button } from "./ui/button";
 import { levelColor } from "../lib/colorMap";
 import { Spinner } from "./ui/spinner";
-import { Download, Hash, Search } from "lucide-react";
+import { Download, LocateFixed, Search } from "lucide-react";
 import { exportView } from "../lib/platform";
 import { FloatingPanel } from "./FloatingPanel";
-import { Minimap, type MinimapAxis, type VisibleRange } from "./Minimap";
+import { formatFull, Minimap, type MinimapAxis, type VisibleRange } from "./Minimap";
 import { ThreadLanes } from "./ThreadLanes";
+import { formatRange, type TimeRange } from "./TimeRangeSelect";
+import { isLineNumber, parseTimeInput, type ParsedTime } from "../lib/timeInput";
 import type { FieldDef } from "../lib/logSummary";
 
 /*
@@ -142,6 +144,9 @@ export const LogViewer = ({
   searchOpen,
   onSearchOpenChange,
   statusStart,
+  timeSpan,
+  timeRange,
+  onTimeRangeChange,
 }: {
   baseUrl: string;
   sessionId: string;
@@ -168,6 +173,11 @@ export const LogViewer = ({
   onSearchOpenChange: (open: boolean) => void;
   /** Shown at the start of the status bar (the active filters while the filter panel is hidden) */
   statusStart?: React.ReactNode;
+  /** First and last timestamp of the file (ms, log clock); null without timestamps */
+  timeSpan: { start: number; end: number } | null;
+  /** The time range filter (already part of `filterParams`) */
+  timeRange: TimeRange | null;
+  onTimeRangeChange: (r: TimeRange | null) => void;
 }) => {
   const viewParams = `session_id=${encodeURIComponent(sessionId)}${filterParams}&context=${context}`;
 
@@ -406,15 +416,57 @@ export const LogViewer = ({
     viewportRef.current?.focus();
   };
 
-  /* ---------------- Go to line ---------------- */
+  /* ---------------- Go to line or time ----------------
+     Digits go to a line. Anything else is read as a time (see lib/timeInput): the view
+     scrolls to the first row at or after it. Two times joined by "-" or ".." set the time
+     range filter instead. A bare time of day means the day of the rows on screen. */
   const [gotoInput, setGotoInput] = useState("");
-  const goToLine = async () => {
-    const line = parseInt(gotoInput, 10);
-    if (!Number.isFinite(line) || line < 1) return;
-    const r = await fetch(`${baseUrl}/view/row_of_line?${viewParams}&line=${line}`);
-    if (!r.ok) return;
-    const { row } = await r.json();
-    if (row < rowCount) jumpToRow(row);
+  const [gotoMsg, setGotoMsg] = useState<string | null>(null);
+  // (a function: the rows on screen are only known further down)
+  const parseGoto = (): ParsedTime | null =>
+    gotoInput.trim() && !isLineNumber(gotoInput)
+      ? timeSpan
+        ? parseTimeInput(gotoInput, { ...timeSpan, ref: visibleRef.current?.tFirst ?? null })
+        : { kind: "error", message: "This file has no timestamps" }
+      : null;
+  useEffect(() => setGotoMsg(null), [gotoInput]);
+  const goTo = async () => {
+    if (isLineNumber(gotoInput)) {
+      const line = parseInt(gotoInput.replace(/[^\d]/g, ""), 10);
+      if (!Number.isFinite(line) || line < 1) return;
+      const r = await fetch(`${baseUrl}/view/row_of_line?${viewParams}&line=${line}`);
+      if (!r.ok) return;
+      const { row } = await r.json();
+      if (row < rowCount) jumpToRow(row);
+      setGotoMsg(row < rowCount ? null : "No rows at or after that line in this view");
+      return;
+    }
+    const p = parseGoto();
+    if (!p || p.kind === "error") return;
+    if (p.kind === "range") {
+      onTimeRangeChange({ from: p.from, to: p.to });
+      setGotoMsg(`Filtered to ${formatRange(p)}`);
+      return;
+    }
+    const r = await fetch(`${baseUrl}/view/row_of_time?${viewParams}&time_ms=${p.t}`);
+    if (!r.ok) {
+      setGotoMsg(`Error: ${await r.text()}`);
+      return;
+    }
+    const d: { row: number; row_count: number; line: number | null; time_ms: number | null; row_line: number | null } = await r.json();
+    const at = d.time_ms != null ? formatFull(d.time_ms) : "";
+    if (d.line == null) {
+      setGotoMsg(`No log line at or after ${formatFull(p.t)}`);
+    } else if (d.row >= d.row_count) {
+      setGotoMsg(`${at} (line ${d.line.toLocaleString()}) is filtered out, and so is everything after it`);
+    } else {
+      jumpToRow(d.row);
+      setGotoMsg(
+        d.row_line === d.line
+          ? `Line ${d.line.toLocaleString()} · ${at}`
+          : `${at} (line ${d.line.toLocaleString()}) is filtered out: went to the next row, line ${(d.row_line ?? 0).toLocaleString()}`
+      );
+    }
   };
 
   /* ---------------- Minimap: jump to a file line ----------------
@@ -489,6 +541,8 @@ export const LogViewer = ({
         levels: p.get("levels"),
         fields: p.get("fields"),
         keywords: p.get("keywords"),
+        timeFrom: timeRange?.from ?? null,
+        timeTo: timeRange?.to ?? null,
         context,
         format,
       });
@@ -601,6 +655,7 @@ export const LogViewer = ({
     );
   }
 
+  const parsedGoto = parseGoto();
   const panelStatus = isSearching
     ? "Searching…"
     : search.length >= SEARCH_MIN
@@ -660,6 +715,8 @@ export const LogViewer = ({
           color={minimapColor}
           visible={visibleRef.current}
           onJumpToLine={jumpToLine}
+          timeRange={timeRange}
+          onTimeRangeChange={onTimeRangeChange}
         />
       )}
 
@@ -672,6 +729,8 @@ export const LogViewer = ({
           fieldLabel={lanesField.label}
           visible={visibleRef.current}
           onJumpToLine={jumpToLine}
+          timeRange={timeRange}
+          onTimeRangeChange={onTimeRangeChange}
         />
       )}
 
@@ -706,7 +765,7 @@ export const LogViewer = ({
       {/* Search & go to line: floating panel */}
       {searchOpen && (
         <FloatingPanel
-          title="Search & go to line"
+          title="Search & go to"
           icon={<Search className="size-4 text-muted-foreground" />}
           onClose={() => onSearchOpenChange(false)}
           storageKey="logviewer.searchPanel"
@@ -733,22 +792,42 @@ export const LogViewer = ({
             </div>
             <div className="flex gap-2">
               <div className="relative flex-1">
-                <Hash className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                <LocateFixed className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
                 <Input
                   ref={gotoInputRef}
-                  placeholder="Go to line…  (Ctrl+G)"
-                  inputMode="numeric"
+                  placeholder={timeSpan ? "Go to line or time…  (Ctrl+G)" : "Go to line…  (Ctrl+G)"}
                   className="h-8 pl-8"
                   value={gotoInput}
                   onChange={(e: React.ChangeEvent<HTMLInputElement>) => setGotoInput(e.target.value)}
                   onKeyDown={(e) => {
-                    if (e.key === "Enter") goToLine();
+                    if (e.key === "Enter") goTo();
                   }}
+                  aria-describedby="goto-hint"
                 />
               </div>
-              <Button size="sm" variant="secondary" className="h-8" onClick={goToLine} disabled={!rowCount}>
-                Go
+              <Button
+                size="sm"
+                variant="secondary"
+                className="h-8"
+                onClick={goTo}
+                disabled={!rowCount || parsedGoto?.kind === "error" || !gotoInput.trim()}
+              >
+                {parsedGoto?.kind === "range" ? "Filter" : "Go"}
               </Button>
+            </div>
+            <div id="goto-hint" className="line-clamp-2 min-h-4 break-words pl-1 font-mono text-[11px] text-muted-foreground" title={gotoMsg ?? undefined}>
+              {gotoMsg ??
+                (parsedGoto?.kind === "error" ? (
+                  <span className="text-destructive">{parsedGoto.message}</span>
+                ) : parsedGoto?.kind === "time" ? (
+                  <>→ {formatFull(parsedGoto.t)}{timeSpan && (parsedGoto.t < timeSpan.start || parsedGoto.t > timeSpan.end) ? " (outside the file)" : ""}</>
+                ) : parsedGoto?.kind === "range" ? (
+                  <>Filter to {formatRange(parsedGoto)}</>
+                ) : timeSpan ? (
+                  "e.g. 48213 · 14:05 · 11-18 14:05:30 · 14:00 - 14:30 to filter"
+                ) : (
+                  "A line number"
+                ))}
             </div>
           </div>
 

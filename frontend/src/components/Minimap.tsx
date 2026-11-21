@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { colorMap, groupColors, OTHER_GROUP_COLOR } from "../lib/colorMap";
+import { RangeShade, rangeCursor, useTimeRangeDrag, type TimeRange } from "./TimeRangeSelect";
 
 /*
  * Horizontal minimap of the whole file: one vertical line per pixel column, colored by
@@ -8,7 +9,12 @@ import { colorMap, groupColors, OTHER_GROUP_COLOR } from "../lib/colorMap";
  * The backend aggregates the levels into one bucket per device pixel (GET /minimap), so
  * the browser never holds per-line data, whatever the file size. With a filter, the
  * file's levels stay as a dim background and the matching lines are drawn on top.
- * The box marks the lines currently on screen; click or drag to jump.
+ * The box marks the lines currently on screen; click to jump (by line, dragging scrolls).
+ *
+ * Time range filter (time axis): drag on the bar or the time scale to filter to a range,
+ * click to jump; the range's edges can be dragged on either, and the range moved on the
+ * scale (see TimeRangeSelect). Outside the range the bar is dimmed. A double-click on the
+ * scale or the bar clears the range.
  *
  * Axis "line": every column covers the same number of lines.
  * Axis "time": every column covers the same slice of the file's time span, so quiet
@@ -159,6 +165,8 @@ export function Minimap({
   color,
   visible,
   onJumpToLine,
+  timeRange,
+  onTimeRangeChange,
 }: {
   baseUrl: string;
   sessionId: string;
@@ -169,6 +177,9 @@ export function Minimap({
   color: string;
   visible: VisibleRange | null;
   onJumpToLine: (line: number) => void;
+  /** The time range filter, if any */
+  timeRange: TimeRange | null;
+  onTimeRangeChange: (r: TimeRange | null) => void;
 }) {
   const barRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -278,8 +289,31 @@ export function Minimap({
   };
   const dragging = useRef(false);
 
+  /* time range (time axis): a drag on the bar or the scale selects, a click jumps; by
+     line, a drag on the bar scrolls through the file as before */
+  const canSelect = timeAxis && t1 > t0;
+  const rect = () => barRef.current!.getBoundingClientRect();
+  const range = useTimeRangeDrag({
+    range: canSelect ? timeRange : null,
+    onChange: onTimeRangeChange,
+    timeAt: (clientX) => {
+      const r = rect();
+      return t0 + ((clientX - r.left) / r.width) * (t1 - t0);
+    },
+    xOf: (t) => {
+      const r = rect();
+      return r.left + ((t - t0) / (t1 - t0)) * r.width;
+    },
+    bounds: [t0, t1],
+  });
+  const shownRange = canSelect ? range.draft ?? timeRange : null;
+
   const onPointerDown = (e: React.PointerEvent) => {
     if (!lineCount || e.button !== 0) return;
+    if (canSelect) {
+      range.begin(e, false);
+      return;
+    }
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     dragging.current = true;
     const p = targetAt(e.clientX);
@@ -289,10 +323,37 @@ export function Minimap({
     if (!lineCount) return;
     const p = targetAt(e.clientX);
     setHover(p);
+    if (range.move(e)) return;
+    const h = canSelect ? range.hit(e.clientX) : null;
+    (e.currentTarget as HTMLElement).style.cursor = h === "from" || h === "to" ? "ew-resize" : canSelect ? "crosshair" : "";
     if (dragging.current && p.jump != null) onJumpToLine(p.jump);
   };
-  const onPointerUp = () => {
+  const onPointerUp = (e: React.PointerEvent) => {
     dragging.current = false;
+    if (range.dragging() && !range.end()) {
+      // a click, not a drag: jump
+      const p = targetAt(e.clientX);
+      if (p.jump != null) onJumpToLine(p.jump);
+    }
+  };
+
+  // the time scale selects ranges; a click there jumps like a click on the bar
+  const onScaleDown = (e: React.PointerEvent) => {
+    if (!canSelect || e.button !== 0) return;
+    range.begin(e, true);
+  };
+  const onScaleMove = (e: React.PointerEvent) => {
+    if (!canSelect) return;
+    setHover(targetAt(e.clientX));
+    if (range.move(e)) return;
+    (e.currentTarget as HTMLElement).style.cursor = rangeCursor(range.hit(e.clientX), true) ?? "";
+  };
+  const onScaleUp = (e: React.PointerEvent) => {
+    if (!range.dragging()) return;
+    if (!range.end()) {
+      const p = targetAt(e.clientX);
+      if (p.jump != null) onJumpToLine(p.jump);
+    }
   };
 
   // viewport box, at least 3 px wide so it stays visible on huge files
@@ -322,7 +383,17 @@ export function Minimap({
     <div className="shrink-0 select-none border-b border-white/10" style={{ background: "#252526" }}>
       {/* time scale */}
       {axis === "time" && (
-        <div className="relative overflow-hidden border-b border-white/5" style={{ height: AXIS_HEIGHT }}>
+        <div
+          className="relative touch-none overflow-hidden border-b border-white/5"
+          style={{ height: AXIS_HEIGHT }}
+          onPointerDown={onScaleDown}
+          onPointerMove={onScaleMove}
+          onPointerUp={onScaleUp}
+          onPointerCancel={range.cancel}
+          onPointerLeave={() => setHover(null)}
+          onDoubleClick={() => timeRange && onTimeRangeChange(null)}
+          title={canSelect ? (timeRange ? "Drag the edges or the range to change it · double-click to clear it" : "Drag to filter a time range") : undefined}
+        >
           {ticks.map(({ t, label }) => {
             const x = ((t - t0) / (t1 - t0)) * cssWidth;
             // no label that would be cut at the right edge
@@ -339,6 +410,8 @@ export function Minimap({
           {data && !timeAxis && (
             <div className="px-3 text-[10px] leading-[16px] text-white/50">No timestamps found in this file</div>
           )}
+          {shownRange && <RangeShade range={shownRange} vf={t0} vt={t1} width={cssWidth} grips label draft={!!range.draft} />}
+          {hover && canSelect && <div className="pointer-events-none absolute inset-y-0 w-px bg-white/40" style={{ left: hover.x }} />}
         </div>
       )}
 
@@ -349,8 +422,13 @@ export function Minimap({
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
-        onPointerCancel={onPointerUp}
+        onPointerCancel={() => {
+          dragging.current = false;
+          range.cancel();
+        }}
         onPointerLeave={() => setHover(null)}
+        onDoubleClick={() => timeRange && onTimeRangeChange(null)}
+        title={canSelect ? (timeRange ? "Click to jump · drag to select another time range · double-click to clear it" : "Click to jump · drag to filter a time range") : undefined}
         role="slider"
         aria-label={`Minimap by ${axis}: ${color === "level" ? "log levels" : color} across the file, click to jump`}
         aria-valuemin={1}
@@ -359,16 +437,18 @@ export function Minimap({
       >
         <canvas ref={canvasRef} className="absolute inset-0 h-full w-full" style={{ imageRendering: "pixelated" }} />
 
+        {shownRange && <RangeShade range={shownRange} vf={t0} vt={t1} width={cssWidth} draft={!!range.draft} dim={0.25} />}
+
         {box && (
           <div
-            className="pointer-events-none absolute inset-y-0 rounded-[2px] border border-white/80 bg-white/10 shadow-[0_0_0_1px_rgba(0,0,0,0.6)]"
+            className="pointer-events-none absolute inset-y-0 z-[6] rounded-[2px] border border-white/80 bg-white/10 shadow-[0_0_0_1px_rgba(0,0,0,0.6)]"
             style={{ left: box.left, width: box.width }}
           />
         )}
 
         {hover && (
           <>
-            <div className="pointer-events-none absolute inset-y-0 w-px bg-white/70" style={{ left: hover.x }} />
+            <div className="pointer-events-none absolute inset-y-0 z-[6] w-px bg-white/70" style={{ left: hover.x }} />
             <div
               className="pointer-events-none absolute top-1/2 z-10 -translate-y-1/2 whitespace-nowrap rounded bg-black/85 px-1.5 py-0.5 font-mono text-[10px] text-white shadow"
               style={hover.x > cssWidth - 260 ? { right: cssWidth - hover.x + 6 } : { left: hover.x + 6 }}

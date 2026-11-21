@@ -29,6 +29,10 @@ fn as_text(line: &[u8]) -> Cow<'_, str> {
 /// message only if the keyword is somewhere in the line. Lines failing any of these are
 /// rejected with a SIMD substring search before they are decoded and split. The result
 /// is identical to `LineFilter::matches`.
+///
+/// With a time range and the chunks' time spans ([`with_chunk_spans`](Self::with_chunk_spans)),
+/// chunks whose timestamps all lie outside the range are skipped without being read, so a
+/// narrow range scans only the few chunks around it.
 pub struct CompiledFilter {
     format: Arc<LogFormat>,
     /// `(field index, accepted values)`; the level is one of them
@@ -38,6 +42,10 @@ pub struct CompiledFilter {
     impossible: bool,
     /// Each group must have at least one needle present in the line.
     prechecks: Vec<Vec<memmem::Finder<'static>>>,
+    /// `[from, to)` in ns: the line's timestamp must be in it
+    time: Option<(i64, i64)>,
+    /// Earliest and latest timestamp per index chunk, to skip chunks outside `time`
+    chunk_spans: Option<Arc<crate::logfile::levels::LevelIndex>>,
 }
 
 impl CompiledFilter {
@@ -74,7 +82,31 @@ impl CompiledFilter {
                 None => impossible = true,
             }
         }
-        Self { format, criteria, keywords: filter.keywords, impossible, prechecks }
+        Self { format, criteria, keywords: filter.keywords, impossible, prechecks, time: filter.time, chunk_spans: None }
+    }
+
+    /// Use the chunks' time spans of `levels` (built over the same file) to skip chunks
+    /// outside the time range. Without them every chunk is read; the result is the same.
+    pub fn with_chunk_spans(mut self, levels: Arc<crate::logfile::levels::LevelIndex>) -> Self {
+        self.chunk_spans = Some(levels);
+        self
+    }
+
+    /// Whether chunk `i` of the file can hold a match (false only when its timestamps are
+    /// known and all outside the time range).
+    pub fn chunk_may_match(&self, i: usize) -> bool {
+        if self.impossible {
+            return false;
+        }
+        let (Some((a, b)), Some(levels)) = (self.time, &self.chunk_spans) else {
+            return true;
+        };
+        match levels.chunk_spans().get(i) {
+            // no timestamp in the chunk: no line of it can be in a time range
+            Some(None) => false,
+            Some(Some((lo, hi))) => *hi >= a && *lo < b,
+            None => true,
+        }
     }
 
     pub fn matches(&self, line: &[u8]) -> bool {
@@ -96,12 +128,15 @@ impl CompiledFilter {
                 return false;
             }
         }
-        match &self.keywords {
-            None => true,
-            Some(kws) => {
-                let message = self.format.message_field().map_or(&*text, |m| p.get(&text, m));
-                kws.iter().any(|kw| message.contains(kw.as_str()))
+        if let Some(kws) = &self.keywords {
+            let message = self.format.message_field().map_or(&*text, |m| p.get(&text, m));
+            if !kws.iter().any(|kw| message.contains(kw.as_str())) {
+                return false;
             }
+        }
+        match self.time {
+            None => true,
+            Some((a, b)) => self.format.time_ns(&text, &p).is_some_and(|t| t >= a && t < b),
         }
     }
 }
@@ -110,9 +145,12 @@ impl CompiledFilter {
 #[derive(Debug)]
 pub struct Cancelled;
 
-/// The runs of consecutive matching lines of one chunk, as half-open `[start, end)`.
-fn chunk_matches(file: &LogFile, filter: &CompiledFilter, chunk: &Chunk) -> Vec<(u64, u64)> {
+/// The runs of consecutive matching lines of chunk number `i`, as half-open `[start, end)`.
+fn chunk_matches(file: &LogFile, filter: &CompiledFilter, i: usize, chunk: &Chunk) -> Vec<(u64, u64)> {
     let mut ranges: Vec<(u64, u64)> = Vec::new();
+    if !filter.chunk_may_match(i) {
+        return ranges;
+    }
     for (line, bytes) in file.chunk_lines(chunk) {
         if filter.matches(bytes) {
             match ranges.last_mut() {
@@ -144,7 +182,8 @@ pub fn scan_matches(
     let per_chunk: Vec<Option<Vec<(u64, u64)>>> = file
         .chunks()
         .par_iter()
-        .map(|chunk| (!cancel.load(Ordering::Relaxed)).then(|| chunk_matches(file, filter, chunk)))
+        .enumerate()
+        .map(|(i, chunk)| (!cancel.load(Ordering::Relaxed)).then(|| chunk_matches(file, filter, i, chunk)))
         .collect();
 
     let mut ranges: Vec<(u64, u64)> = Vec::new();
@@ -168,9 +207,12 @@ pub fn scan_streaming<E>(
     let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<(u64, u64)>>(1);
     std::thread::scope(|scope| {
         scope.spawn(move || {
-            for group in file.chunks().chunks(wave) {
-                let per_chunk: Vec<Vec<(u64, u64)>> =
-                    group.par_iter().map(|chunk| chunk_matches(file, filter, chunk)).collect();
+            for (g, group) in file.chunks().chunks(wave).enumerate() {
+                let per_chunk: Vec<Vec<(u64, u64)>> = group
+                    .par_iter()
+                    .enumerate()
+                    .map(|(i, chunk)| chunk_matches(file, filter, g * wave + i, chunk))
+                    .collect();
                 let mut ranges = Vec::new();
                 for r in per_chunk {
                     append_ranges(&mut ranges, r);
@@ -429,6 +471,123 @@ mod tests {
         assert_eq!(s.start_timestamp.as_deref(), Some("2026-11-20 10:00:00.000"));
     }
 
+    /// A log over 2 hours, mostly in time order with some lines a few seconds back, stack
+    /// trace lines, a stretch without any timestamps and a format line with a bad time.
+    fn timed_sample() -> String {
+        let mut s = String::new();
+        let mut x = 99u64;
+        let mut sec = 0i64;
+        for i in 0..6000 {
+            x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            if (2000..2300).contains(&i) {
+                s.push_str("    at a stack trace line\n");
+                continue;
+            }
+            if i % 37 == 0 {
+                s.push_str("    at frame BOOM\n");
+            }
+            if i == 4321 {
+                s.push_str("[not a time] [ERROR] [core] BOOM\n");
+            }
+            sec = (sec + ((x >> 40) % 3) as i64).min(7199);
+            let t = if (x >> 20) % 13 == 0 { (sec - 5).max(0) } else { sec };
+            let level = ["INFO", "WARN", "ERROR", "DEBUG"][((x >> 30) % 4) as usize];
+            let msg = if (x >> 10) % 7 == 0 { "BOOM" } else { "fine" };
+            s.push_str(&format!("[2025-01-01 {:02}:{:02}:{:02}.{:03}] [{level}] [core] {msg} {i}\n", t / 3600, t / 60 % 60, t % 60, i % 1000));
+        }
+        s
+    }
+
+    fn ms_of(h: i64, m: i64, s: i64) -> f64 {
+        ((crate::logfile::timeline::days_from_civil(2025, 1, 1) * 86_400 + h * 3600 + m * 60 + s) * 1000) as f64
+    }
+
+    #[test]
+    fn time_range_scan_equals_sequential_filter_and_skips_chunks() {
+        let text = timed_sample();
+        let fmt = legacy();
+        for chunk_size in [64, 2048, 1 << 20] {
+            let file = LogFile::from_test_bytes(text.as_bytes(), chunk_size);
+            let levels = Arc::new(crate::logfile::levels::LevelIndex::build(&file, &fmt));
+            let ranges = [
+                (Some(ms_of(0, 10, 0)), Some(ms_of(0, 20, 0))),
+                (Some(ms_of(0, 59, 59)), Some(ms_of(1, 0, 1))),
+                (None, Some(ms_of(0, 5, 0))),
+                (Some(ms_of(1, 50, 0)), None),
+                // nothing in it: after the end, just before the start, between two lines
+                (Some(ms_of(3, 0, 0)), Some(ms_of(4, 0, 0))),
+                (Some(ms_of(0, 0, 0) - 10_000.0), Some(ms_of(0, 0, 0))),
+                (Some(ms_of(0, 30, 0) + 0.25), Some(ms_of(0, 30, 0) + 0.75)),
+            ];
+            for (from, to) in ranges {
+                for (lv, kw) in [(None, None), (Some("ERROR"), None), (None, Some("BOOM")), (Some("WARN,INFO"), Some("fine"))] {
+                    let filter = LineFilter::from_csv(lv, None, kw).with_time_ms(from, to).unwrap();
+                    let expected: Vec<u64> = text
+                        .lines()
+                        .enumerate()
+                        .filter(|(_, l)| filter.matches(&fmt, l))
+                        .map(|(i, _)| i as u64)
+                        .collect();
+                    let plain = CompiledFilter::new(filter.clone(), fmt.clone());
+                    let skipping = CompiledFilter::new(filter.clone(), fmt.clone()).with_chunk_spans(levels.clone());
+                    let what = format!("chunk {chunk_size} {from:?}..{to:?} {lv:?} {kw:?}");
+                    for f in [&plain, &skipping] {
+                        let ms = scan_matches(&file, f, &AtomicBool::new(false)).unwrap_or_else(|_| panic!("cancelled"));
+                        assert_eq!(ms.line_numbers(0, usize::MAX), expected, "{what}");
+                        let mut streamed = Vec::new();
+                        scan_streaming(&file, f, |r| {
+                            append_ranges(&mut streamed, r.to_vec());
+                            Ok::<(), ()>(())
+                        })
+                        .unwrap();
+                        assert_eq!(streamed, ms.ranges(), "{what} streaming");
+                    }
+                    // every skipped chunk really has no line in the range
+                    for (i, chunk) in file.chunks().iter().enumerate() {
+                        if !skipping.chunk_may_match(i) {
+                            let first = chunk.first_line;
+                            assert!(expected.iter().all(|&l| l < first || l >= first + chunk.line_count), "{what} chunk {i}");
+                        }
+                    }
+                }
+            }
+            // a narrow range in small chunks reads only a few of them
+            if chunk_size == 2048 {
+                let f = CompiledFilter::new(LineFilter::default().with_time_ms(Some(ms_of(0, 10, 0)), Some(ms_of(0, 11, 0))).unwrap(), fmt.clone())
+                    .with_chunk_spans(levels.clone());
+                let read = (0..file.chunks().len()).filter(|&i| f.chunk_may_match(i)).count();
+                assert!(file.chunks().len() > 50 && read <= 4, "{read} of {} chunks", file.chunks().len());
+            }
+        }
+    }
+
+    #[test]
+    fn time_range_bounds_and_validation() {
+        let fmt = legacy();
+        let at = |s: &str| format!("[2025-01-01 00:00:{s}] [INFO] [core] m");
+        let f = LineFilter::default().with_time_ms(Some(ms_of(0, 0, 10)), Some(ms_of(0, 0, 20))).unwrap();
+        // from included, to excluded, millisecond precision
+        assert!(!f.matches(&fmt, &at("09.999")));
+        assert!(f.matches(&fmt, &at("10.000")));
+        assert!(f.matches(&fmt, &at("19.999")));
+        assert!(!f.matches(&fmt, &at("20.000")));
+        // no timestamp: never in a time range
+        assert!(!f.matches(&fmt, "[soon] [INFO] [core] m"));
+        assert!(!f.matches(&fmt, "    at frame"));
+        assert!(!f.is_empty());
+        assert!(LineFilter::default().with_time_ms(None, None).unwrap().is_empty());
+        assert!(LineFilter::default().with_time_ms(Some(5.0), Some(5.0)).is_err());
+        assert!(LineFilter::default().with_time_ms(Some(6.0), Some(5.0)).is_err());
+        assert!(LineFilter::default().with_time_ms(Some(f64::NAN), None).is_err());
+        assert_eq!(LineFilter::default().with_time_ms(None, Some(1.0)).unwrap().time, Some((i64::MIN, 1_000_000)));
+        // a format without a time field matches nothing in a range
+        let no_time = Arc::new(LogFormat::compile("[%l] %v").unwrap());
+        let file = LogFile::from_test_bytes(b"[INFO] a\n[ERROR] b\n", 64);
+        let levels = Arc::new(crate::logfile::levels::LevelIndex::build(&file, &no_time));
+        let c = CompiledFilter::new(f.clone(), no_time).with_chunk_spans(levels);
+        assert_eq!(scan_matches(&file, &c, &AtomicBool::new(false)).unwrap_or_else(|_| panic!()).match_count(), 0);
+    }
+
     #[test]
     fn cancelled_scan_returns_error() {
         let text = sample();
@@ -532,10 +691,44 @@ mod bench {
         }
 
         let t = Instant::now();
-        let lv = crate::logfile::levels::LevelIndex::build(&file, &fmt);
+        let lv = Arc::new(crate::logfile::levels::LevelIndex::build(&file, &fmt));
         println!("level index: {:.0} ms", ms(t.elapsed()));
         let errors = scan_matches(&file, &CompiledFilter::new(LineFilter::from_csv(Some("ERROR"), None, None), fmt.clone()), &no_cancel)
             .unwrap_or_else(|_| panic!("cancelled"));
+
+        // time ranges: a window in the middle of the span, alone and with a level filter
+        if let Some((t0, t1)) = lv.time_span() {
+            let span_ms = (t1 - t0) as f64 / 1e6;
+            let mid = t0 as f64 / 1e6 + span_ms / 2.0;
+            for (name, frac) in [("50%", 0.5), ("10%", 0.1), ("1%", 0.01), ("0.01%", 0.0001)] {
+                for (what, level) in [("all levels", None), ("ERROR", Some("ERROR"))] {
+                    let filter = LineFilter::from_csv(level, None, None)
+                        .with_time_ms(Some(mid - span_ms * frac / 2.0), Some(mid + span_ms * frac / 2.0))
+                        .unwrap();
+                    let skipping = CompiledFilter::new(filter.clone(), fmt.clone()).with_chunk_spans(lv.clone());
+                    let read = (0..file.chunks().len()).filter(|&i| skipping.chunk_may_match(i)).count();
+                    let t = Instant::now();
+                    let m = scan_matches(&file, &skipping, &no_cancel).unwrap_or_else(|_| panic!("cancelled"));
+                    let fast = ms(t.elapsed());
+                    let t = Instant::now();
+                    let full = scan_matches(&file, &CompiledFilter::new(filter, fmt.clone()), &no_cancel).unwrap_or_else(|_| panic!("cancelled"));
+                    assert_eq!(m.ranges(), full.ranges());
+                    println!(
+                        "time range {name:>5} {what:10}: {fast:6.0} ms reading {read}/{} chunks (all chunks: {:6.0} ms), {} matches",
+                        file.chunks().len(),
+                        ms(t.elapsed()),
+                        m.match_count()
+                    );
+                }
+            }
+            let t = Instant::now();
+            let mut found = 0;
+            for i in 0..20 {
+                let at = t0 + (t1 - t0) / 20 * i;
+                found += crate::logfile::timeline::first_line_at_or_after(&file, &lv, &fmt, at).is_some() as u32;
+            }
+            println!("jump to time: {:.2} ms per lookup ({found}/20 found)", ms(t.elapsed()) / 20.0);
+        }
         for n in [1000u64, 4000, 16384] {
             let t = Instant::now();
             let b = lv.buckets(n);

@@ -7,9 +7,10 @@ import { SidebarProvider, SidebarInset, SidebarTrigger } from "../components/ui/
 import { Button } from "../components/ui/button";
 import { Separator } from "../components/ui/separator";
 import { levelColor, levelRank } from "../lib/colorMap";
-import { ChevronDown, ChevronUp, Filter, GitBranch, Layers, ListFilter, Tag, X } from "lucide-react";
+import { ChevronDown, ChevronUp, Clock, Filter, GitBranch, Layers, ListFilter, Tag, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { MinimapAxis } from "../components/Minimap";
+import { formatDuration, formatRangeTime, RANGE_COLOR, type TimeRange } from "../components/TimeRangeSelect";
 
 interface DashboardProps {
     sessionId: string;
@@ -67,6 +68,9 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
     const [selectedFields, setSelectedFields] = useState<Record<string, string[]>>({});
     const [selectedKeywords, setSelectedKeywords] = useState<string[]>([]);
     const [newKeyword, setNewKeyword] = useState<string>("");
+    // time range filter (ms, log clock, `to` excluded): set by dragging on the minimap or
+    // the thread lanes, or typed in Go to; applied at once (no debounce, it comes from a drag)
+    const [timeRange, setTimeRange] = useState<TimeRange | null>(null);
 
     const [contextLines, setContextLines] = useState<number>(0);
 
@@ -238,10 +242,15 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
     const levelsParam = debouncedLevels ? `&levels=${encodeURIComponent(debouncedLevels)}` : "";
     const fieldsParam = debouncedFields ? `&fields=${encodeURIComponent(debouncedFields)}` : "";
     const keywordsParam = debouncedKeywords ? `&keywords=${encodeURIComponent(debouncedKeywords)}` : "";
+    const timeParam = timeRange ? `&time_from=${timeRange.from}&time_to=${timeRange.to}` : "";
+    const timeSpan = useMemo(
+        () => (summary.start_ms != null && summary.stop_ms != null ? { start: Math.min(summary.start_ms, summary.stop_ms), end: Math.max(summary.start_ms, summary.stop_ms) } : null),
+        [summary]
+    );
 
     // Changing the filter triggers one scan on the backend; changing the context
     // reuses its result (the backend keeps match line numbers, not text).
-    const filterParams = `${levelsParam}${fieldsParam}${keywordsParam}`;
+    const filterParams = `${levelsParam}${fieldsParam}${keywordsParam}${timeParam}`;
 
     const toggleLevel = (l: string) =>
         setSelectedLevels((s) => (s.includes(l) ? s.filter((x) => x !== l) : [...s, l]));
@@ -253,12 +262,18 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
     };
 
     const fieldCount = Object.values(selectedFields).reduce((a, v) => a + v.length, 0);
-    const hasFilter = selectedLevels.length + fieldCount + selectedKeywords.length > 0;
+    const hasFilter = selectedLevels.length + fieldCount + selectedKeywords.length > 0 || timeRange != null;
     const clearFilters = () => {
         setSelectedLevels([]);
         setSelectedFields({});
         setSelectedKeywords([]);
         setNewKeyword("");
+        setTimeRange(null);
+    };
+    // the minimap's time scale is where ranges are dragged: show it
+    const showTimeScale = () => {
+        setShowMinimap(true);
+        setMinimapAxis("time");
     };
 
     return (
@@ -390,6 +405,16 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
                                     />
                                 </div>
 
+                                {/* Time range: set by dragging on the minimap's time scale */}
+                                {timeSpan && (
+                                    <TimeRangeChip
+                                        range={timeRange}
+                                        onClear={() => setTimeRange(null)}
+                                        onPick={showTimeScale}
+                                        timeScaleShown={showMinimap && minimapAxis === "time"}
+                                    />
+                                )}
+
                                 {hasFilter && (
                                     <Button variant="ghost" size="sm" className="h-7 rounded-full px-2.5 text-xs" onClick={clearFilters}>
                                         <X className="size-3.5" />
@@ -428,6 +453,9 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
                             lanesField={showLanes && lanesFieldDef ? lanesFieldDef : null}
                             searchOpen={searchOpen}
                             onSearchOpenChange={setSearchOpen}
+                            timeSpan={timeSpan}
+                            timeRange={timeRange}
+                            onTimeRangeChange={setTimeRange}
                             statusStart={
                                 !filterOpen && (
                                     <FilterSummary
@@ -436,6 +464,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
                                             .map((f) => ({ label: f.label, count: selectedFields[f.name]?.length ?? 0 }))
                                             .filter((f) => f.count > 0)}
                                         keywords={selectedKeywords}
+                                        timeRange={timeRange}
                                         onOpen={() => setFilterOpen(true)}
                                         onClear={hasFilter ? clearFilters : undefined}
                                     />
@@ -449,21 +478,76 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
     );
 };
 
+/** The time range filter in the filter bar: the range with its length and a clear button;
+    without a range, a quiet button that shows the minimap's time scale to drag on */
+function TimeRangeChip({
+    range,
+    onClear,
+    onPick,
+    timeScaleShown,
+}: {
+    range: TimeRange | null;
+    onClear: () => void;
+    onPick: () => void;
+    timeScaleShown: boolean;
+}) {
+    if (!range) {
+        return (
+            <button
+                type="button"
+                onClick={onPick}
+                title={
+                    timeScaleShown
+                        ? "Drag on the minimap to filter a time range; or type one in Go to (Ctrl+G), e.g. 14:00 - 14:30"
+                        : "Show the minimap by time, then drag on it to filter a time range"
+                }
+                className="inline-flex h-7 items-center gap-1.5 rounded-full border border-dashed px-2.5 text-xs font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
+            >
+                <Clock className="size-3.5" />
+                Time range
+            </button>
+        );
+    }
+    return (
+        <span
+            className="inline-flex h-7 max-w-full items-center gap-1.5 rounded-full border pl-2.5 pr-1 text-xs"
+            style={{ borderColor: `color-mix(in oklab, ${RANGE_COLOR} 55%, var(--border))`, background: `color-mix(in oklab, ${RANGE_COLOR} 10%, transparent)` }}
+            title="Time range filter: drag its edges on the minimap or the thread lanes to change it"
+        >
+            <Clock className="size-3.5 shrink-0 text-muted-foreground" />
+            <span className="truncate font-mono tabular-nums">
+                {formatRangeTime(range.from)} – {formatRangeTime(range.to, range.from)}
+            </span>
+            <span className="shrink-0 text-muted-foreground">{formatDuration(range.to - range.from)}</span>
+            <button
+                type="button"
+                aria-label="Clear the time range"
+                onClick={onClear}
+                className="rounded-full p-0.5 text-muted-foreground hover:bg-background hover:text-foreground"
+            >
+                <X className="size-3" />
+            </button>
+        </span>
+    );
+}
+
 /** The active filters, small, in the status bar while the filter panel is hidden; click to show the panel */
 function FilterSummary({
     levels,
     fields,
     keywords,
+    timeRange,
     onOpen,
     onClear,
 }: {
     levels: string[];
     fields: { label: string; count: number }[];
     keywords: string[];
+    timeRange: TimeRange | null;
     onOpen: () => void;
     onClear?: () => void;
 }) {
-    const active = levels.length + fields.length + keywords.length > 0;
+    const active = levels.length + fields.length + keywords.length > 0 || timeRange != null;
     return (
         <div className="flex min-w-0 max-w-[60%] shrink items-center gap-0.5">
             {/* the sidebar is a drawer on small screens */}
@@ -490,6 +574,12 @@ function FilterSummary({
                         {f.count} {(f.count === 1 ? f.label : plural(f.label)).toLowerCase()}
                     </span>
                 ))}
+                {timeRange && (
+                    <span className="inline-flex shrink-0 items-center gap-1 font-mono tabular-nums text-muted-foreground">
+                        <Clock className="size-3" />
+                        {formatRangeTime(timeRange.from)} – {formatRangeTime(timeRange.to, timeRange.from)}
+                    </span>
+                )}
                 {keywords.length > 0 && (
                     <span className="truncate text-muted-foreground">{keywords.map((k) => `"${k}"`).join(" ")}</span>
                 )}

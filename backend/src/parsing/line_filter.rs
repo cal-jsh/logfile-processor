@@ -12,6 +12,10 @@ pub struct LineFilter {
     /// Other fields by name (`domain`, `thread`, ...): the line's value must be one of these
     pub fields: BTreeMap<String, Vec<String>>,
     pub keywords: Option<Vec<String>>,
+    /// Time range `[from, to)` in ns since 1970 in the log's own clock (see
+    /// [`parse_timestamp`](crate::logfile::timeline::parse_timestamp)): the line must have
+    /// a timestamp in it. Lines without a timestamp never match a time range.
+    pub time: Option<(i64, i64)>,
 }
 
 fn split_csv(s: Option<&str>) -> Option<Vec<String>> {
@@ -29,7 +33,28 @@ impl LineFilter {
             }
             _ => BTreeMap::new(),
         };
-        Ok(Self { levels: split_csv(levels), fields, keywords: split_csv(keywords) })
+        Ok(Self { levels: split_csv(levels), fields, keywords: split_csv(keywords), time: None })
+    }
+
+    /// Add a time range from the query parameters `time_from` / `time_to` (ms since 1970
+    /// in the log's own clock, `from` included, `to` excluded). A missing end is open.
+    pub fn with_time_ms(mut self, from: Option<f64>, to: Option<f64>) -> Result<Self, String> {
+        if from.is_none() && to.is_none() {
+            return Ok(self);
+        }
+        let ns = |ms: f64| -> Result<i64, String> {
+            if !ms.is_finite() {
+                return Err("Invalid time range".into());
+            }
+            Ok((ms * 1e6).round().clamp(i64::MIN as f64, i64::MAX as f64) as i64)
+        };
+        let a = from.map(ns).transpose()?.unwrap_or(i64::MIN);
+        let b = to.map(ns).transpose()?.unwrap_or(i64::MAX);
+        if a >= b {
+            return Err("Empty time range: time_from must be before time_to".into());
+        }
+        self.time = Some((a, b));
+        Ok(self)
     }
 
     /// Levels, domains and keywords as comma-separated lists (tests).
@@ -39,11 +64,11 @@ impl LineFilter {
         if let Some(d) = split_csv(domains) {
             fields.insert("domain".to_string(), d);
         }
-        Self { levels: split_csv(levels), fields, keywords: split_csv(keywords) }
+        Self { levels: split_csv(levels), fields, keywords: split_csv(keywords), time: None }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.levels.is_none() && self.fields.is_empty() && self.keywords.is_none()
+        self.levels.is_none() && self.fields.is_empty() && self.keywords.is_none() && self.time.is_none()
     }
 
     /// Whether the line matches all active criteria. Lines that don't have the format
@@ -66,7 +91,10 @@ impl LineFilter {
             .keywords
             .as_ref()
             .map_or(true, |v| v.iter().any(|kw| message.contains(kw.as_str())));
-        level_ok && fields_ok && keyword_ok
+        let time_ok = self
+            .time
+            .map_or(true, |(a, b)| fmt.time_ns(line, &p).is_some_and(|t| t >= a && t < b));
+        level_ok && fields_ok && keyword_ok && time_ok
     }
 }
 
