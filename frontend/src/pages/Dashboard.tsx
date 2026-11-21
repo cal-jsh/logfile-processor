@@ -7,10 +7,11 @@ import { SidebarProvider, SidebarInset, SidebarTrigger } from "../components/ui/
 import { Button } from "../components/ui/button";
 import { Separator } from "../components/ui/separator";
 import { levelColor, levelRank } from "../lib/colorMap";
-import { ChevronDown, ChevronUp, Clock, Filter, GitBranch, Layers, ListFilter, Tag, X } from "lucide-react";
+import { ChevronDown, ChevronUp, Clock, Filter, GitBranch, Layers, ListFilter, Regex, Tag, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { MinimapAxis } from "../components/Minimap";
 import { formatDuration, formatRangeTime, RANGE_COLOR, type TimeRange } from "../components/TimeRangeSelect";
+import { RegexToggle } from "../components/RegexToggle";
 
 interface DashboardProps {
     sessionId: string;
@@ -62,12 +63,45 @@ function isTypingTarget(t: EventTarget | null): boolean {
     return !!t.closest('[data-slot="dialog-content"], [role="listbox"], [role="menu"]');
 }
 
+/** A keyword, or a regular expression (Rust regex syntax), of the filter bar */
+type SearchTerm = { text: string; regex: boolean };
+
+/** Why `pattern` is not a valid regular expression (several lines, the spot marked), or null. */
+async function checkRegex(baseUrl: string, pattern: string, signal?: AbortSignal): Promise<string | null> {
+    const r = await fetch(`${baseUrl}/regex/check?pattern=${encodeURIComponent(pattern)}`, { signal });
+    if (!r.ok) throw new Error(String(r.status));
+    return ((await r.json()) as { error: string | null }).error;
+}
+
 export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summary, fileName, onClose, onChangeFormat }) => {
     const [selectedLevels, setSelectedLevels] = useState<string[]>([]);
     // values per filterable field (domain, thread, ...): none selected = all
     const [selectedFields, setSelectedFields] = useState<Record<string, string[]>>({});
-    const [selectedKeywords, setSelectedKeywords] = useState<string[]>([]);
+    // keywords and regular expressions; a line matches if its message has any of them
+    const [selectedTerms, setSelectedTerms] = useState<SearchTerm[]>([]);
     const [newKeyword, setNewKeyword] = useState<string>("");
+    // what the input adds: a keyword, or a regular expression (".*" switch, Alt+R)
+    const [regexMode, setRegexModeState] = useState<boolean>(() => {
+        try {
+            return localStorage.getItem("logviewer.keywordRegex") === "true";
+        } catch {
+            return false;
+        }
+    });
+    const setRegexMode = (on: boolean) => {
+        setRegexModeState(on);
+        try {
+            localStorage.setItem("logviewer.keywordRegex", String(on));
+        } catch {
+            /* not stored */
+        }
+    };
+    // why the regular expression being typed does not compile (checked by the backend)
+    const [regexError, setRegexError] = useState<string | null>(null);
+    // the error is shown under the keyword field
+    const termsRef = useRef<HTMLDivElement>(null);
+    const termsRect = regexError ? termsRef.current?.getBoundingClientRect() : undefined;
+    const errorAt: React.CSSProperties | undefined = termsRect && { left: termsRect.left + 20, top: termsRect.bottom + 6 };
     // time range filter (ms, log clock, `to` excluded): set by dragging on the minimap or
     // the thread lanes, or typed in Go to; applied at once (no debounce, it comes from a drag)
     const [timeRange, setTimeRange] = useState<TimeRange | null>(null);
@@ -77,6 +111,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
     const [debouncedLevels, setDebouncedLevels] = useState<string>("");
     const [debouncedFields, setDebouncedFields] = useState<string>("");
     const [debouncedKeywords, setDebouncedKeywords] = useState<string>("");
+    const [debouncedPatterns, setDebouncedPatterns] = useState<string>("");
 
     const [showDelta, setShowDelta] = useState(false); // controls delta display
     // level minimap above the rows; remembered per browser
@@ -212,10 +247,31 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
             setDebouncedLevels(selectedLevels.join(","));
             const active = Object.entries(selectedFields).filter(([, v]) => v.length > 0);
             setDebouncedFields(active.length ? JSON.stringify(Object.fromEntries(active)) : "");
-            setDebouncedKeywords(selectedKeywords.join(","));
+            setDebouncedKeywords(selectedTerms.filter((t) => !t.regex).map((t) => t.text).join(","));
+            const patterns = selectedTerms.filter((t) => t.regex).map((t) => t.text);
+            setDebouncedPatterns(patterns.length ? JSON.stringify(patterns) : "");
         }, 300);
         return () => clearTimeout(timer);
-    }, [selectedLevels, selectedFields, selectedKeywords]);
+    }, [selectedLevels, selectedFields, selectedTerms]);
+
+    // check the regular expression while it is typed
+    useEffect(() => {
+        const pattern = newKeyword.trim();
+        if (!regexMode || !pattern) {
+            setRegexError(null);
+            return;
+        }
+        const ctrl = new AbortController();
+        const t = setTimeout(() => {
+            checkRegex(baseUrl, pattern, ctrl.signal)
+                .then(setRegexError)
+                .catch(() => { });
+        }, 150);
+        return () => {
+            clearTimeout(t);
+            ctrl.abort();
+        };
+    }, [newKeyword, regexMode, baseUrl]);
 
     // levels in the file, in severity order (unknown ones last)
     // colour by a field only if this file's format has it (the choice is kept for other files)
@@ -242,6 +298,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
     const levelsParam = debouncedLevels ? `&levels=${encodeURIComponent(debouncedLevels)}` : "";
     const fieldsParam = debouncedFields ? `&fields=${encodeURIComponent(debouncedFields)}` : "";
     const keywordsParam = debouncedKeywords ? `&keywords=${encodeURIComponent(debouncedKeywords)}` : "";
+    const regexParam = debouncedPatterns ? `&regex=${encodeURIComponent(debouncedPatterns)}` : "";
     const timeParam = timeRange ? `&time_from=${timeRange.from}&time_to=${timeRange.to}` : "";
     const timeSpan = useMemo(
         () => (summary.start_ms != null && summary.stop_ms != null ? { start: Math.min(summary.start_ms, summary.stop_ms), end: Math.max(summary.start_ms, summary.stop_ms) } : null),
@@ -250,23 +307,31 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
 
     // Changing the filter triggers one scan on the backend; changing the context
     // reuses its result (the backend keeps match line numbers, not text).
-    const filterParams = `${levelsParam}${fieldsParam}${keywordsParam}${timeParam}`;
+    const filterParams = `${levelsParam}${fieldsParam}${keywordsParam}${regexParam}${timeParam}`;
 
     const toggleLevel = (l: string) =>
         setSelectedLevels((s) => (s.includes(l) ? s.filter((x) => x !== l) : [...s, l]));
 
-    const addKeyword = () => {
+    const addKeyword = async () => {
         const val = newKeyword.trim();
-        if (val && !selectedKeywords.includes(val)) setSelectedKeywords((s) => [...s, val]);
+        if (!val) return setNewKeyword("");
+        const term: SearchTerm = { text: val, regex: regexMode };
+        if (regexMode) {
+            // a pattern that does not compile stays in the input, with the reason below it
+            const err = await checkRegex(baseUrl, val).catch(() => null);
+            setRegexError(err);
+            if (err) return;
+        }
+        setSelectedTerms((s) => (s.some((t) => t.text === term.text && t.regex === term.regex) ? s : [...s, term]));
         setNewKeyword("");
     };
 
     const fieldCount = Object.values(selectedFields).reduce((a, v) => a + v.length, 0);
-    const hasFilter = selectedLevels.length + fieldCount + selectedKeywords.length > 0 || timeRange != null;
+    const hasFilter = selectedLevels.length + fieldCount + selectedTerms.length > 0 || timeRange != null;
     const clearFilters = () => {
         setSelectedLevels([]);
         setSelectedFields({});
-        setSelectedKeywords([]);
+        setSelectedTerms([]);
         setNewKeyword("");
         setTimeRange(null);
     };
@@ -368,41 +433,96 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
                                     />
                                 ))}
 
-                                {/* Keywords: tag input */}
-                                <div className="flex h-7 min-w-56 flex-1 items-center gap-1 rounded-full border bg-background pl-2.5 pr-1 focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/50">
-                                    <Tag className="size-3.5 shrink-0 text-muted-foreground" />
-                                    {selectedKeywords.map((kw) => (
-                                        <span
-                                            key={kw}
-                                            className="inline-flex max-w-40 shrink-0 items-center gap-0.5 rounded-full bg-secondary py-0.5 pl-2 pr-0.5 text-xs"
-                                        >
-                                            <span className="truncate">{kw}</span>
-                                            <button
-                                                type="button"
-                                                aria-label={`Remove keyword ${kw}`}
-                                                onClick={() => setSelectedKeywords((s) => s.filter((x) => x !== kw))}
-                                                className="rounded-full p-0.5 text-muted-foreground hover:bg-background hover:text-foreground"
+                                {/* Keywords and regular expressions: tag input */}
+                                <div
+                                    ref={termsRef}
+                                    className={cn(
+                                        "flex h-7 min-w-56 flex-1 items-center gap-1 rounded-full border bg-background pl-2.5 pr-1 focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/50",
+                                        regexError && "border-destructive focus-within:border-destructive focus-within:ring-destructive/25"
+                                    )}
+                                >
+                                    {regexMode ? (
+                                        <Regex className="size-3.5 shrink-0 text-muted-foreground" />
+                                    ) : (
+                                        <Tag className="size-3.5 shrink-0 text-muted-foreground" />
+                                    )}
+                                    {/* chips shrink (and the row clips) before the switch moves */}
+                                    <div className="flex h-full min-w-0 flex-1 items-center gap-1 overflow-hidden">
+                                        {selectedTerms.map((t) => (
+                                            <span
+                                                key={(t.regex ? "re:" : "kw:") + t.text}
+                                                title={t.regex ? `Regular expression: ${t.text}` : `Keyword: ${t.text}`}
+                                                className={cn(
+                                                    "inline-flex min-w-14 max-w-48 items-center gap-0.5 rounded-full py-0.5 pl-2 pr-0.5 text-xs",
+                                                    t.regex ? "term-regex font-mono text-[11px]" : "bg-secondary"
+                                                )}
                                             >
-                                                <X className="size-3" />
-                                            </button>
-                                        </span>
-                                    ))}
-                                    <input
-                                        value={newKeyword}
-                                        onChange={(e) => setNewKeyword(e.target.value)}
-                                        onKeyDown={(e) => {
-                                            if (e.key === "Enter" || e.key === ",") {
-                                                e.preventDefault();
-                                                addKeyword();
-                                            } else if (e.key === "Backspace" && !newKeyword && selectedKeywords.length) {
-                                                setSelectedKeywords((s) => s.slice(0, -1));
+                                                <span className="truncate">
+                                                    {t.regex ? (
+                                                        <>
+                                                            <span className="opacity-50">/</span>
+                                                            {t.text}
+                                                            <span className="opacity-50">/</span>
+                                                        </>
+                                                    ) : (
+                                                        t.text
+                                                    )}
+                                                </span>
+                                                <button
+                                                    type="button"
+                                                    aria-label={`Remove ${t.regex ? "regular expression" : "keyword"} ${t.text}`}
+                                                    onClick={() => setSelectedTerms((s) => s.filter((x) => x !== t))}
+                                                    className="rounded-full p-0.5 text-muted-foreground hover:bg-background hover:text-foreground"
+                                                >
+                                                    <X className="size-3" />
+                                                </button>
+                                            </span>
+                                        ))}
+                                        <input
+                                            value={newKeyword}
+                                            onChange={(e) => setNewKeyword(e.target.value)}
+                                            onKeyDown={(e) => {
+                                                // a comma ends a keyword, but is common inside a regex ({1,3})
+                                                if (e.key === "Enter" || (e.key === "," && !regexMode)) {
+                                                    e.preventDefault();
+                                                    addKeyword();
+                                                } else if (e.key === "Backspace" && !newKeyword && selectedTerms.length) {
+                                                    setSelectedTerms((s) => s.slice(0, -1));
+                                                } else if (e.key === "Escape" && regexError) {
+                                                    setNewKeyword("");
+                                                } else if (e.altKey && e.key.toLowerCase() === "r") {
+                                                    e.preventDefault();
+                                                    setRegexMode(!regexMode);
+                                                }
+                                            }}
+                                            onBlur={addKeyword}
+                                            placeholder={
+                                                selectedTerms.length
+                                                    ? ""
+                                                    : regexMode
+                                                        ? "Regular expression (Enter to add)"
+                                                        : "Keywords (Enter to add)"
                                             }
-                                        }}
-                                        onBlur={addKeyword}
-                                        placeholder={selectedKeywords.length ? "" : "Keywords (Enter to add)"}
-                                        aria-label="Add keyword"
-                                        className="h-full min-w-20 flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground"
-                                    />
+                                            aria-label={regexMode ? "Add regular expression" : "Add keyword"}
+                                            aria-invalid={!!regexError}
+                                            spellCheck={false}
+                                            className={cn(
+                                                "h-full min-w-28 flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground",
+                                                regexMode && "font-mono text-[11px]"
+                                            )}
+                                        />
+                                    </div>
+                                    <RegexToggle on={regexMode} onChange={setRegexMode} className="rounded-full" />
+                                    {/* fixed: the filter panel clips what overflows it */}
+                                    {regexError && newKeyword.trim() && (
+                                        <pre
+                                            role="alert"
+                                            style={errorAt}
+                                            className="fixed z-50 max-w-[min(32rem,90vw)] overflow-x-auto rounded-md border border-destructive/40 bg-popover px-2.5 py-1.5 font-mono text-[11px] leading-snug whitespace-pre text-destructive shadow-md"
+                                        >
+                                            {regexError.replace(/^regex parse error:\n/, "")}
+                                        </pre>
+                                    )}
                                 </div>
 
                                 {/* Time range: set by dragging on the minimap's time scale */}
@@ -463,7 +583,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
                                         fields={fieldFilters
                                             .map((f) => ({ label: f.label, count: selectedFields[f.name]?.length ?? 0 }))
                                             .filter((f) => f.count > 0)}
-                                        keywords={selectedKeywords}
+                                        terms={selectedTerms}
                                         timeRange={timeRange}
                                         onOpen={() => setFilterOpen(true)}
                                         onClear={hasFilter ? clearFilters : undefined}
@@ -535,19 +655,19 @@ function TimeRangeChip({
 function FilterSummary({
     levels,
     fields,
-    keywords,
+    terms,
     timeRange,
     onOpen,
     onClear,
 }: {
     levels: string[];
     fields: { label: string; count: number }[];
-    keywords: string[];
+    terms: SearchTerm[];
     timeRange: TimeRange | null;
     onOpen: () => void;
     onClear?: () => void;
 }) {
-    const active = levels.length + fields.length + keywords.length > 0 || timeRange != null;
+    const active = levels.length + fields.length + terms.length > 0 || timeRange != null;
     return (
         <div className="flex min-w-0 max-w-[60%] shrink items-center gap-0.5">
             {/* the sidebar is a drawer on small screens */}
@@ -580,8 +700,10 @@ function FilterSummary({
                         {formatRangeTime(timeRange.from)} – {formatRangeTime(timeRange.to, timeRange.from)}
                     </span>
                 )}
-                {keywords.length > 0 && (
-                    <span className="truncate text-muted-foreground">{keywords.map((k) => `"${k}"`).join(" ")}</span>
+                {terms.length > 0 && (
+                    <span className="truncate text-muted-foreground">
+                        {terms.map((t) => (t.regex ? `/${t.text}/` : `"${t.text}"`)).join(" ")}
+                    </span>
                 )}
                 <ChevronDown className="size-3 shrink-0 text-muted-foreground" />
             </button>

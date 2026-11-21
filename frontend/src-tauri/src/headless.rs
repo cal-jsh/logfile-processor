@@ -173,6 +173,7 @@ fn build_filter(args: &FilterArgs, format: &LogFormat) -> Result<LineFilter, Str
         levels,
         fields,
         keywords: (!args.keywords.is_empty()).then(|| args.keywords.clone()),
+        patterns: (!args.patterns.is_empty()).then(|| args.patterns.clone()),
         time: None,
     })
 }
@@ -220,6 +221,11 @@ mod tests {
         let out = run_cli(&["-l", "error,warning", "-f", "Thread=12"]).unwrap();
         assert_eq!(out.lines().count(), 2);
         assert!(out.ends_with("refused\n"));
+        // regular expressions on the message, together with keywords as "any of"
+        let out = run_cli(&["-e", "^(timeout|disk)", "-k", "refused"]).unwrap();
+        assert_eq!(out.lines().count(), 3);
+        assert!(!out.contains("connect ok"));
+        assert_eq!(run_cli(&["-e", r"(?i)^REFUSED$"]).unwrap().lines().count(), 1);
     }
 
     #[test]

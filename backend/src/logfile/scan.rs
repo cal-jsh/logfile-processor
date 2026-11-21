@@ -6,6 +6,7 @@ use crate::logfile::view::MatchSet;
 use crate::model::log_summary::{FieldValues, FormatInfo, LogSummary};
 use crate::parsing::format::{FieldKind, LogFormat, Parsed};
 use crate::parsing::line_filter::LineFilter;
+use crate::parsing::text_match::TextMatcher;
 use memchr::memmem;
 use rayon::prelude::*;
 use std::borrow::Cow;
@@ -37,11 +38,16 @@ pub struct CompiledFilter {
     format: Arc<LogFormat>,
     /// `(field index, accepted values)`; the level is one of them
     criteria: Vec<(usize, Vec<String>)>,
-    keywords: Option<Vec<String>>,
-    /// A criterion names a field the format does not have: nothing matches
+    /// Keywords and regular expressions the message must match (any of them)
+    text: Option<TextMatcher>,
+    /// A criterion names a field the format does not have (or a regular expression
+    /// does not compile): nothing matches
     impossible: bool,
     /// Each group must have at least one needle present in the line.
     prechecks: Vec<Vec<memmem::Finder<'static>>>,
+    /// Finds the lines that can match the regular expressions, chunk by chunk (see
+    /// [`TextMatcher::candidate_pattern`]); `None`: every line is checked
+    candidates: Option<regex::bytes::Regex>,
     /// `[from, to)` in ns: the line's timestamp must be in it
     time: Option<(i64, i64)>,
     /// Earliest and latest timestamp per index chunk, to skip chunks outside `time`
@@ -65,8 +71,25 @@ impl CompiledFilter {
                 })
                 .collect::<Vec<_>>()
         };
-        if let Some(k) = &filter.keywords {
-            prechecks.push(finders(k, (None, None)));
+        let text = match filter.text_matcher() {
+            Ok(t) => t,
+            Err(_) => {
+                impossible = true;
+                None
+            }
+        };
+        let mut candidates = None;
+        match &text {
+            // plain keywords: a SIMD substring search per keyword and line
+            Some(t) if !t.has_regex() => prechecks.push(finders(t.keywords(), (None, None))),
+            // with regular expressions: search the whole chunk for the lines that can
+            // match (a regex call per line costs more than the keyword search above)
+            Some(t) => {
+                candidates = t.candidate_pattern().and_then(|p| {
+                    regex::bytes::RegexBuilder::new(&p).size_limit(32 << 20).build().ok()
+                })
+            }
+            None => {}
         }
         let wanted = filter
             .levels
@@ -82,7 +105,7 @@ impl CompiledFilter {
                 None => impossible = true,
             }
         }
-        Self { format, criteria, keywords: filter.keywords, impossible, prechecks, time: filter.time, chunk_spans: None }
+        Self { format, criteria, text, impossible, prechecks, candidates, time: filter.time, chunk_spans: None }
     }
 
     /// Use the chunks' time spans of `levels` (built over the same file) to skip chunks
@@ -128,9 +151,9 @@ impl CompiledFilter {
                 return false;
             }
         }
-        if let Some(kws) = &self.keywords {
+        if let Some(t) = &self.text {
             let message = self.format.message_field().map_or(&*text, |m| p.get(&text, m));
-            if !kws.iter().any(|kw| message.contains(kw.as_str())) {
+            if !t.is_match(message) {
                 return false;
             }
         }
@@ -151,6 +174,10 @@ fn chunk_matches(file: &LogFile, filter: &CompiledFilter, i: usize, chunk: &Chun
     if !filter.chunk_may_match(i) {
         return ranges;
     }
+    if let Some(candidates) = &filter.candidates {
+        candidate_matches(file, filter, candidates, chunk, &mut ranges);
+        return ranges;
+    }
     for (line, bytes) in file.chunk_lines(chunk) {
         if filter.matches(bytes) {
             match ranges.last_mut() {
@@ -160,6 +187,38 @@ fn chunk_matches(file: &LogFile, filter: &CompiledFilter, i: usize, chunk: &Chun
         }
     }
     ranges
+}
+
+/// Like the line loop of [`chunk_matches`], but only over the lines `candidates` finds
+/// something in: search the chunk, check the line of each hit, go on after that line.
+fn candidate_matches(
+    file: &LogFile,
+    filter: &CompiledFilter,
+    candidates: &regex::bytes::Regex,
+    chunk: &Chunk,
+    ranges: &mut Vec<(u64, u64)>,
+) {
+    let data = &file.bytes()[..chunk.end];
+    let (mut pos, mut line) = (chunk.start, chunk.first_line);
+    while pos < chunk.end {
+        let Some(hit) = candidates.find_at(data, pos) else { break };
+        let hit = hit.start();
+        let start = memchr::memrchr(b'\n', &data[pos..hit]).map_or(pos, |i| pos + i + 1);
+        line += memchr::memchr_iter(b'\n', &data[pos..start]).count() as u64;
+        let end = memchr::memchr(b'\n', &data[hit..]).map_or(chunk.end, |i| hit + i);
+        let mut bytes = &data[start..end];
+        if bytes.last() == Some(&b'\r') {
+            bytes = &bytes[..bytes.len() - 1];
+        }
+        if filter.matches(bytes) {
+            match ranges.last_mut() {
+                Some(r) if r.1 == line => r.1 = line + 1,
+                _ => ranges.push((line, line + 1)),
+            }
+        }
+        pos = end + 1;
+        line += 1;
+    }
 }
 
 /// Append runs in file order, joining a run that continues the last one.
@@ -507,6 +566,45 @@ mod tests {
     }
 
     #[test]
+    fn regex_scan_equals_sequential_filter() {
+        let text = sample();
+        let fmt = legacy();
+        // CRLF line ends too: the candidate search cuts lines itself
+        let crlf = text.replace('\n', "\r\n");
+        let files = [
+            LogFile::from_test_bytes(text.as_bytes(), 64),
+            LogFile::from_test_bytes(text.as_bytes(), 4096),
+            LogFile::from_test_bytes(crlf.as_bytes(), 4096),
+        ];
+        for (lv, kw, re) in [
+            // literal pre-check (prefix, suffix, case variants), none (\d), anchors
+            (None, None, r#"["BOOM h\\w+"]"#),
+            (None, None, r#"["\\w+ened"]"#),
+            (None, None, r#"["(?i)boom"]"#),
+            (Some("ERROR"), None, r#"["fine \\d*2$"]"#),
+            (None, Some("BOOM"), r#"["^all fine 1\\d$"]"#),
+            (None, None, r#"["\\d{4}"]"#),
+            (None, None, r#"["^$"]"#),
+        ] {
+            let filter = LineFilter::from_query(lv, None, kw, Some(re)).unwrap();
+            let expected: Vec<u64> = text
+                .lines()
+                .enumerate()
+                .filter(|(_, l)| filter.matches(&fmt, l))
+                .map(|(i, _)| i as u64)
+                .collect();
+            for file in &files {
+                let ms = scan_matches(file, &CompiledFilter::new(filter.clone(), fmt.clone()), &AtomicBool::new(false))
+                    .unwrap_or_else(|_| panic!("cancelled"));
+                assert_eq!(ms.line_numbers(0, usize::MAX), expected, "{re}");
+            }
+            if !re.contains("^$") {
+                assert!(!expected.is_empty(), "{re} should match something");
+            }
+        }
+    }
+
+    #[test]
     fn thread_filter_on_another_format() {
         let mut text = String::new();
         for i in 0..500 {
@@ -519,7 +617,7 @@ mod tests {
         }
         let fmt = Arc::new(LogFormat::compile("%Y-%m-%d %H:%M:%S.%e [%t] [%l] %v").unwrap());
         let file = LogFile::from_test_bytes(text.as_bytes(), 512);
-        let f = LineFilter::from_query(Some("warn"), Some(r#"{"thread":["101","103"]}"#), None).unwrap();
+        let f = LineFilter::from_query(Some("warn"), Some(r#"{"thread":["101","103"]}"#), None, None).unwrap();
         let ms = scan_matches(&file, &CompiledFilter::new(f, fmt.clone()), &AtomicBool::new(false))
             .unwrap_or_else(|_| panic!("cancelled"));
         assert_eq!(ms.match_count(), 250);
@@ -818,6 +916,29 @@ mod bench {
                 m.match_count(),
                 ms(t.elapsed()),
                 v.row_count()
+            );
+        }
+
+        // regular expressions: with a literal pre-check (prefix, suffix, case variants)
+        // and without one (every line is parsed and the regex run on its message)
+        for (name, re) in [
+            ("re literal", r#"["failed"]"#),
+            ("re prefix lit", r#"["Request \\d+ failed"]"#),
+            ("re suffix lit", r#"["\\d{4,} failed"]"#),
+            ("re (?i)", r#"["(?i)FAILED: connection"]"#),
+            ("re alternation", r#"["Checksum mismatch|Slow response: \\d{4,} ms"]"#),
+            ("re regex scan", r#"["[A-Z]\\w+ \\d{5} [a-z]+ed\\W"]"#),
+            ("re no literal", r#"["^\\w+ \\d{5} \\w+"]"#),
+        ] {
+            let filter = LineFilter::from_query(None, None, None, Some(re)).unwrap();
+            let compiled = CompiledFilter::new(filter, fmt.clone());
+            let t = Instant::now();
+            let m = scan_matches(&file, &compiled, &no_cancel).unwrap_or_else(|_| panic!("cancelled"));
+            println!(
+                "scan {name:15}: {:7.0} ms, {:>11} matches, pre-check: {}",
+                ms(t.elapsed()),
+                m.match_count(),
+                compiled.candidates.as_ref().map_or("none".to_string(), |c| c.as_str().chars().take(40).collect())
             );
         }
 

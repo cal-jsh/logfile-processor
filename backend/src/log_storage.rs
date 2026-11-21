@@ -382,7 +382,7 @@ impl Session {
 }
 
 fn cache_key(f: &LineFilter) -> String {
-    format!("{:?}|{:?}|{:?}|{:?}", f.levels, f.fields, f.keywords, f.time)
+    format!("{:?}|{:?}|{:?}|{:?}|{:?}", f.levels, f.fields, f.keywords, f.patterns, f.time)
 }
 
 /// Threads of the pass that indexes a file after it is opened: all cores but two. On
