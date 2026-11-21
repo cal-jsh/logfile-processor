@@ -3,7 +3,7 @@
 [![CI](https://github.com/cal-jsh/logfile-processor/actions/workflows/rust.yml/badge.svg)](https://github.com/cal-jsh/logfile-processor/actions/workflows/rust.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-A fast Windows log viewer for files of many gigabytes. Open a log in place, filter it
+A fast log viewer for Windows and Linux, for files of many gigabytes. Open a log in place, filter it
 by level, domain, thread or keyword, and see where things happen across the whole file.
 
 ![Opening a 5 GB log, filtering by level and keyword, minimap and thread lanes](docs/demo.gif)
@@ -27,8 +27,9 @@ _A 5 GB, 52 million line log: opened in about 3 seconds, filters in a fraction o
 - **Export.** The current view as text or CSV.
 - **Command line.** Open files from a terminal, or filter without a window
   (see below).
-- **Recent files**, drag and drop onto the window or the exe, and a Report a bug
-  button that fills in version details.
+- **Recent files**, drag and drop onto the window or the exe (Windows) or "Open
+  with" in the file manager (Linux), and a Report a bug button that fills in version
+  details.
 
 ### Keyboard shortcuts
 
@@ -48,9 +49,17 @@ shows them and has a button to clear them.
 
 ## Install
 
-Download the installer (`.exe` or `.msi`) from the
-[latest release](https://github.com/cal-jsh/logfile-processor/releases/latest).
-Requires Windows 10 or 11 (WebView2 is installed with the app if missing).
+Download from the [latest release](https://github.com/cal-jsh/logfile-processor/releases/latest):
+
+- **Windows 10 or 11:** the installer (`-setup.exe` or `.msi`). WebView2 is installed
+  with the app if missing.
+- **Debian, Ubuntu and derivatives (x86_64):** the `.deb`, installed with
+  `sudo apt install ./Logfile.Processor_x.y.z_amd64.deb`. It pulls in WebKitGTK and
+  puts `logfile_processor_desktop` (the viewer, also in the applications menu) and
+  `logfile_processor_cli` in `/usr/bin`.
+- **Other Linux distributions (x86_64):** the `.AppImage`. Make it executable
+  (`chmod +x Logfile.Processor_x.y.z_amd64.AppImage`) and run it. It needs a system
+  about as new as Ubuntu 22.04 or newer.
 
 ## Update
 
@@ -60,10 +69,16 @@ installer with a progress bar, checks its signature against the key built into t
 and installs and restarts. Other open windows of the app close during the install.
 Only published releases are offered, not drafts.
 
+On Linux the AppImage replaces itself (the file must be writable by you); a `.deb`
+install downloads the new `.deb` and installs it with `pkexec`, which asks for your
+password.
+
 ## Command line
 
 `logfile_processor_cli.exe` is installed next to the viewer (run it from the install
-folder or add that folder to `PATH`).
+folder or add that folder to `PATH`). The Linux `.deb` installs `logfile_processor_cli`
+in `/usr/bin`; for the AppImage, download `logfile_processor_cli-linux-x86_64.tar.gz`
+from the release (the command line tool needs no WebKitGTK).
 
 ```powershell
 # Open files, one window each
@@ -82,20 +97,28 @@ problem, 2 a bad option.
 ## Build from source
 
 Needs Rust (stable), Node.js 22 and the
-[Tauri prerequisites for Windows](https://v2.tauri.app/start/prerequisites/).
+[Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for your system.
+On Debian or Ubuntu that is:
+
+```sh
+sudo apt install build-essential curl file pkg-config libssl-dev libxdo-dev   libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+```
+
 From `frontend/`:
 
 ```powershell
 npm install --legacy-peer-deps   # once
 npm run desktop                  # dev run: Vite dev server + app window
-npm run desktop:build            # release exe + NSIS and MSI installers
+npm run desktop:build            # release exe + installers for this system
 ```
 
-The exe lands in `frontend/src-tauri/target/release/`, the installers in
-`frontend/src-tauri/target/release/bundle/`. Tests: `cargo test` in `backend/` and in
+The exe lands in `frontend/src-tauri/target/release/`, the installers (NSIS and MSI on
+Windows, `.deb` and `.AppImage` on Linux) in `frontend/src-tauri/target/release/bundle/`.
+In WSL, build inside the Linux file system (`~/...`), not under `/mnt/c`, which is
+many times slower. Tests: `cargo test` in `backend/` and in
 `frontend/src-tauri/`.
 
-Releases are built by CI from a `v*` tag that matches the version in
+Releases are built by CI (a Windows and then a Linux job) from a `v*` tag that matches the version in
 `frontend/src-tauri/tauri.conf.json`. `npm run set-version 1.2.3` (in `frontend/`) sets
 that version in every file that carries it (tauri.conf.json, package.json, both
 Cargo.toml files and the lock files); commit that, then tag the commit `v1.2.3`. Updater signing needs the repository secret

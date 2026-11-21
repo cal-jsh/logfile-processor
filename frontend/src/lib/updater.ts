@@ -44,7 +44,7 @@ export function describeUpdateError(e: unknown): string {
     return `The downloaded installer failed the signature check and was not installed (${raw}).`;
   }
   if (/invalid updater binary format/i.test(raw)) {
-    return "The downloaded file is not a Windows installer, so nothing was installed.";
+    return "The downloaded file is not an installer for this kind of install (Windows installer, AppImage or .deb), so nothing was installed.";
   }
   if (/error sending request|dns|connect|timed out|network/i.test(raw)) {
     return `Could not reach GitHub (${raw}).`;
@@ -68,7 +68,9 @@ export async function downloadUpdate(
 }
 
 /** Run the downloaded installer. On Windows the app exits here and the installer starts
-    the new version when it is done; elsewhere the app restarts itself. */
+    the new version when it is done. On Linux the plugin replaces the AppImage file, or
+    installs the .deb with `pkexec dpkg -i` (the system asks for the password), and the
+    app then restarts itself. */
 export async function installUpdate(update: Update): Promise<void> {
   await update.install();
   await relaunch();
