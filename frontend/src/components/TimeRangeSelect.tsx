@@ -4,8 +4,8 @@ import { useRef, useState } from "react";
  * Selecting a time range by dragging, shared by the minimap and the thread lanes.
  *
  * Gestures: on the minimap (time axis), drag on the bar or its time scale to select a
- * range, click to jump. On the thread lanes, drag on the time scale or Shift+drag on the
- * lanes (a plain drag there pans a zoomed view). Everywhere: drag a range's edge to move
+ * range, click to jump. The thread lanes work the same (Shift+drag pans them when
+ * zoomed). Everywhere: drag a range's edge to move
  * that edge, drag inside the range on a time scale to move it, double-click to clear it.
  * Releasing a drag applies the range as a filter; a click does not.
  *

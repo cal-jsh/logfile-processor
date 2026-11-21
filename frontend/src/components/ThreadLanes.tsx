@@ -14,7 +14,7 @@ import { RangeShade, rangeCursor, useTimeRangeDrag, type TimeRange } from "./Tim
  * each, in name order; the rest share an "other" lane at the bottom. More lanes than fit
  * scroll vertically; the panel height can be dragged.
  *
- * Zoom: Ctrl+wheel or the buttons; drag to pan, Shift+wheel too. The backend re-bins the
+ * Zoom: Ctrl+wheel or the buttons; Shift+drag (or the middle button) to pan, Shift+wheel too. The backend re-bins the
  * zoomed window from the lines in it, so zooming in shows finer detail, not bigger pixels.
  * While the new window loads, the previous one is drawn stretched.
  *
@@ -22,8 +22,8 @@ import { RangeShade, rangeCursor, useTimeRangeDrag, type TimeRange } from "./Tim
  * click jumps there. With a filter, all lines stay as a dim background and the matching
  * lines are drawn on top. The box marks the time range on screen.
  *
- * Time range filter, as on the minimap: drag on the time scale or Shift+drag on the lanes
- * to filter to a range, drag its edges to change it, drag it on the scale to move it.
+ * Time range filter, as on the minimap: drag on the lanes or their time scale to filter
+ * to a range (a click jumps), drag its edges to change it, drag it on the scale to move it.
  * Double-click the scale or the lanes to clear the range and show the whole file again.
  */
 
@@ -359,22 +359,26 @@ export function ThreadLanes({
   };
 
   const drag = useRef<{ x: number; moved: boolean } | null>(null);
+  // a plain drag selects a time range (a click jumps); Shift+drag or the middle button pans
   const onPointerDown = (e: React.PointerEvent) => {
-    if (e.button !== 0 || !hasTime) return;
-    const h = range.hit(e.clientX);
-    if (e.shiftKey || h === "from" || h === "to") {
-      setHover(null);
+    if (!hasTime || (e.button !== 0 && e.button !== 1)) return;
+    if (e.button === 0 && !e.shiftKey) {
       range.begin(e, false);
       return;
     }
+    e.preventDefault(); // no autoscroll on the middle button
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     drag.current = { x: e.clientX, moved: false };
   };
   const onPointerMove = (e: React.PointerEvent) => {
     if (!data || !hasTime) return;
-    if (range.move(e)) return;
+    if (range.dragging() && range.move(e) && range.draft) {
+      setHover(null);
+      return;
+    }
     const h = range.hit(e.clientX);
-    (e.currentTarget as HTMLElement).style.cursor = h === "from" || h === "to" ? "ew-resize" : e.shiftKey ? "crosshair" : "";
+    (e.currentTarget as HTMLElement).style.cursor =
+      h === "from" || h === "to" ? "ew-resize" : drag.current ? "grabbing" : e.shiftKey && view ? "grab" : "crosshair";
     const d = drag.current;
     if (d) {
       const dx = e.clientX - d.x;
@@ -399,10 +403,15 @@ export function ThreadLanes({
     }, 90);
   };
   const onPointerUp = (e: React.PointerEvent) => {
-    if (range.dragging() && range.end()) return;
+    let click = false;
+    if (range.dragging()) {
+      if (range.end()) return;
+      click = true;
+    }
     const d = drag.current;
     drag.current = null;
-    if (!d || d.moved || !data) return;
+    if (!click && (!d || d.moved)) return;
+    if (!data) return;
     const p = pointAt(e);
     lookup(p.lane, p.x).then((at) => {
       if (at?.line) onJumpToLine(at.line);
@@ -534,7 +543,7 @@ export function ThreadLanes({
           </div>
           <div
             ref={areaRef}
-            className={`relative min-w-0 flex-1 touch-none ${view ? "cursor-grab active:cursor-grabbing" : "cursor-pointer"}`}
+            className="relative min-w-0 flex-1 touch-none cursor-crosshair"
             onPointerDown={onPointerDown}
             onPointerMove={onPointerMove}
             onPointerUp={onPointerUp}
