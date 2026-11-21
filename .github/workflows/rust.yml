@@ -25,6 +25,14 @@
 # platforms to it, so the file ends up with windows-x86_64 (-nsis, -msi) and
 # linux-x86_64 (-appimage, -deb). If the two jobs ran at the same time, the one that
 # finishes last could replace the other's entries.
+#
+# Release notes: the Windows job makes them once (.github/scripts/release-notes.sh:
+# docs/release-notes/<tag>.md if present, else the pull requests merged since the
+# previous tag), puts them on the release page, and both jobs write them into
+# latest.json's "notes" after tauri-action (.github/scripts/set-updater-notes.sh),
+# because that is the text the in-app Update dialog shows and tauri-action's second
+# run would otherwise blank it. Editing the release text on GitHub does not change
+# latest.json.
 
 name: CI
 
@@ -131,11 +139,14 @@ jobs:
       contents: write
     outputs:
       release_id: ${{ steps.tauri.outputs.releaseId }}
+      notes: ${{ steps.notes.outputs.notes }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}       # gh release upload
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # tauri-action creates the release
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # history and tags, for the release notes
 
       - uses: actions/setup-node@v4
         with:
@@ -159,6 +170,21 @@ jobs:
             echo "::error::Tag ${GITHUB_REF_NAME} does not match tauri.conf.json version ${app_version} (expected v${app_version})"
             exit 1
           fi
+
+      # "What's new" for the release page and for the in-app Update dialog (the notes
+      # in latest.json): docs/release-notes/<tag>.md if it exists, otherwise the pull
+      # requests merged since the previous tag. See .github/scripts/release-notes.sh.
+      - name: Release notes
+        id: notes
+        shell: bash
+        run: |
+          bash .github/scripts/release-notes.sh "${GITHUB_REF_NAME}" > release-notes.md
+          echo "Release notes:"; cat release-notes.md
+          {
+            echo 'notes<<EOF_RELEASE_NOTES'
+            cat release-notes.md
+            echo 'EOF_RELEASE_NOTES'
+          } >> "$GITHUB_OUTPUT"
 
       - name: Install frontend dependencies
         working-directory: frontend
@@ -186,12 +212,24 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: Logfile Processor ${{ github.ref_name }}
           releaseBody: |
+            ## What's new
+
+            ${{ steps.notes.outputs.notes }}
+
+            ## Downloads
+
             **Windows:** installer (NSIS `-setup.exe` or `.msi`) and the standalone command line tool `logfile_processor_cli.exe`. The builds are not code-signed yet, so Windows SmartScreen warns on first start.
 
             **Linux (x86_64):** `.deb` for Debian and Ubuntu, or the `.AppImage` for any distribution (`chmod +x`, then run it). The command line tool is in `logfile_processor_cli-linux-x86_64.tar.gz`.
           releaseDraft: true
           prerelease: false
           includeUpdaterJson: true
+
+      # tauri-action just put the whole release body (with the download hints) into
+      # latest.json's notes; the Update dialog should only show what's new.
+      - name: Put the release notes into latest.json
+        shell: bash
+        run: bash .github/scripts/set-updater-notes.sh "${GITHUB_REF_NAME}" release-notes.md
 
       # The installers already contain the CLI next to the viewer; this attaches it
       # on its own for people who only want the command line tool.
@@ -259,6 +297,16 @@ jobs:
           releaseId: ${{ needs.release-windows.outputs.release_id }}
           tagName: ${{ github.ref_name }}
           includeUpdaterJson: true
+
+      # tauri-action keeps only the platforms of the existing latest.json and replaces
+      # its notes with this job's (empty) releaseBody, so write the notes the Windows
+      # job made back in. This job runs last, so this is what installed apps see.
+      - name: Put the release notes into latest.json
+        env:
+          NOTES: ${{ needs.release-windows.outputs.notes }}
+        run: |
+          printf '%s\n' "$NOTES" > release-notes.md
+          bash .github/scripts/set-updater-notes.sh "${GITHUB_REF_NAME}" release-notes.md
 
       # The .deb puts the CLI in /usr/bin next to the viewer, but the AppImage cannot
       # be called that way, so attach it on its own, like on Windows.
