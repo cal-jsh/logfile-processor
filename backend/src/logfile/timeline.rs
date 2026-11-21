@@ -73,6 +73,30 @@ pub fn days_from_civil(y: i64, mo: i64, d: i64) -> i64 {
     era * 146_097 + doe - 719_468
 }
 
+/// The first line (in file order) whose timestamp is `t` or later, with that timestamp:
+/// the chunk is found from the chunks' time spans in `levels`, and only it is read.
+/// In a log written in time order this is where time `t` begins. `None` if no line
+/// is that late.
+pub fn first_line_at_or_after(file: &LogFile, levels: &LevelIndex, format: &LogFormat, t: i64) -> Option<(u64, i64)> {
+    for (chunk, span) in file.chunks().iter().zip(levels.chunk_spans()) {
+        match span {
+            Some((_, hi)) if *hi >= t => {}
+            _ => continue,
+        }
+        for (line, bytes) in file.chunk_lines(chunk) {
+            if levels.code(line) == code::NONE {
+                continue;
+            }
+            if let Some(ts) = format.time_of(bytes) {
+                if ts >= t {
+                    return Some((line, ts));
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Most severe level and first line per time slice.
 pub struct TimeBins {
     /// Most severe level code per slice ([`code::NONE`] for an empty slice)
@@ -238,6 +262,37 @@ mod tests {
         let only = TimeBins::build_ranges(&f, &l, &legacy(), &[(3, 5)]);
         let (lv, first) = only.columns(100);
         assert_eq!((lv[0], lv[1], first[1], lv[99]), (code::NONE, code::INFO, 3, code::WARN));
+    }
+
+    #[test]
+    fn first_line_at_or_after_a_time() {
+        let mut s = String::new();
+        let mut want: Vec<Option<i64>> = Vec::new();
+        for i in 0..2000i64 {
+            if i % 50 == 7 {
+                s.push_str("\tat stack.Frame\n");
+                want.push(None);
+            }
+            // two seconds per line, a one hour pause after line 999
+            let sec = 2 * i + if i >= 1000 { 3600 } else { 0 };
+            s.push_str(&format!("[2025-01-01 {:02}:{:02}:{:02}] [INFO] [a] m{i}\n", sec / 3600, sec / 60 % 60, sec % 60));
+            want.push(Some(sec));
+        }
+        let base = days_from_civil(2025, 1, 1) * 86_400;
+        let ns = |sec: i64| (base + sec) * 1_000_000_000;
+        for chunk in [64, 1000, 1 << 20] {
+            let f = LogFile::from_test_bytes(s.as_bytes(), chunk);
+            let l = LevelIndex::build(&f, &legacy());
+            assert_eq!(l.chunk_spans().len(), f.chunks().len());
+            for sec in [-5, 0, 1, 2, 777, 1998, 1999, 2500, 5598, 5599, 5600, 7597, 7598, 7599, 99_999] {
+                let expect = want
+                    .iter()
+                    .enumerate()
+                    .find(|(_, t)| t.is_some_and(|t| t >= sec))
+                    .map(|(line, t)| (line as u64, ns(t.unwrap())));
+                assert_eq!(first_line_at_or_after(&f, &l, &legacy(), ns(sec)), expect, "chunk {chunk} second {sec}");
+            }
+        }
     }
 
     #[test]

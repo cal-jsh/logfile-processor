@@ -58,6 +58,9 @@ pub struct LanesQuery {
     pub levels: Option<String>,
     pub fields: Option<String>,
     pub keywords: Option<String>,
+    /// Time range filter, ms (see `ViewQuery::time_from`)
+    pub time_from: Option<f64>,
+    pub time_to: Option<f64>,
     /// `/lanes/at` only: the lane (index into `lanes`, `other` last) and the column
     pub lane: Option<usize>,
     pub column: Option<usize>,
@@ -185,6 +188,7 @@ async fn resolve(q: &LanesQuery) -> Result<Resolved, ApiError> {
     };
 
     let filter = LineFilter::from_query(q.levels.as_deref(), q.fields.as_deref(), q.keywords.as_deref())
+        .and_then(|f| f.with_time_ms(q.time_from, q.time_to))
         .map_err(|e| ApiError(StatusCode::BAD_REQUEST, e))?;
     let (matched, match_count) = if filter.is_empty() {
         (None, None)

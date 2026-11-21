@@ -98,6 +98,13 @@ impl Session {
             cell
         };
 
+        // A time range skips the index chunks outside it, known from the level index
+        // (usually built already for the minimap).
+        let levels = match filter.time {
+            Some(_) => Some(self.levels().await?.0),
+            None => None,
+        };
+
         // Run the scan in a detached task, so the result is cached even if the client
         // that asked for it disconnects; later requests wait on the same cell.
         let file = self.file.clone();
@@ -105,7 +112,10 @@ impl Session {
         let cancel = self.start_scan(&key);
         let task = tokio::spawn(async move {
             cell.get_or_try_init(|| async move {
-                let compiled = CompiledFilter::new(filter, format);
+                let mut compiled = CompiledFilter::new(filter, format);
+                if let Some(l) = levels {
+                    compiled = compiled.with_chunk_spans(l);
+                }
                 let res = tokio::task::spawn_blocking(move || {
                     scan_matches(&file, &compiled, &cancel)
                 })
@@ -281,7 +291,7 @@ impl Session {
 }
 
 fn cache_key(f: &LineFilter) -> String {
-    format!("{:?}|{:?}|{:?}", f.levels, f.fields, f.keywords)
+    format!("{:?}|{:?}|{:?}|{:?}", f.levels, f.fields, f.keywords, f.time)
 }
 
 static LOG_STORAGE: Lazy<Mutex<HashMap<String, Arc<Session>>>> =

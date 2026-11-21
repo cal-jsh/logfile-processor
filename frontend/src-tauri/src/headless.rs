@@ -173,6 +173,7 @@ fn build_filter(args: &FilterArgs, format: &LogFormat) -> Result<LineFilter, Str
         levels,
         fields,
         keywords: (!args.keywords.is_empty()).then(|| args.keywords.clone()),
+        time: None,
     })
 }
 

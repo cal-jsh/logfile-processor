@@ -68,6 +68,10 @@ pub struct LevelIndex {
     /// Earliest and latest parseable timestamp of a log line (ns, see
     /// [`parse_timestamp`](crate::logfile::timeline::parse_timestamp))
     time_span: Option<(i64, i64)>,
+    /// Earliest and latest timestamp per index chunk of the file (same order as
+    /// [`LogFile::chunks`]), `None` for a chunk without timestamps. A time range filter
+    /// skips the chunks outside it, and jumping to a time finds its chunk from these.
+    chunk_spans: Vec<Option<(i64, i64)>>,
     pub build_time: Duration,
 }
 
@@ -112,7 +116,9 @@ impl LevelIndex {
 
         let mut packed = vec![0u8; line_count.div_ceil(2) as usize];
         let mut time_span: Option<(i64, i64)> = None;
+        let mut chunk_spans = Vec::with_capacity(parts.len());
         for (at, bytes, span) in parts {
+            chunk_spans.push(span);
             if let Some((a, b)) = span {
                 time_span = Some(time_span.map_or((a, b), |(x, y)| (x.min(a), y.max(b))));
             }
@@ -130,7 +136,7 @@ impl LevelIndex {
                 *m = bytes.iter().fold(0u8, |acc, &b| acc.max(b & 0x0f).max(b >> 4));
             });
 
-        Self { packed, blocks, line_count, time_span, build_time: started.elapsed() }
+        Self { packed, blocks, line_count, time_span, chunk_spans, build_time: started.elapsed() }
     }
 
     pub fn line_count(&self) -> u64 {
@@ -140,6 +146,11 @@ impl LevelIndex {
     /// Earliest and latest timestamp of the log lines, if any has one.
     pub fn time_span(&self) -> Option<(i64, i64)> {
         self.time_span
+    }
+
+    /// Earliest and latest timestamp of each index chunk (see the field).
+    pub fn chunk_spans(&self) -> &[Option<(i64, i64)>] {
+        &self.chunk_spans
     }
 
     /// Severity code of 0-based `line`.

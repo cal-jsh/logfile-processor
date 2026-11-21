@@ -45,6 +45,9 @@ export function exportView(args: {
   /** JSON object of field value lists, e.g. {"thread":["12"]} */
   fields: string | null;
   keywords: string | null;
+  /** Time range filter, ms in the log's clock (`to` excluded) */
+  timeFrom: number | null;
+  timeTo: number | null;
   context: number;
   format: "txt" | "csv";
 }): Promise<string | null> {

@@ -52,6 +52,9 @@ pub struct MinimapQuery {
     pub fields: Option<String>,
     /// Comma-separated keywords; a line matches if its message contains any of them
     pub keywords: Option<String>,
+    /// Time range filter, ms (see `ViewQuery::time_from`)
+    pub time_from: Option<f64>,
+    pub time_to: Option<f64>,
     /// `line` (default): equal numbers of lines per bucket; `time`: equal time slices
     pub axis: Option<String>,
     /// `level` (default), or the name of a text field (e.g. `domain`) to colour by
@@ -118,6 +121,7 @@ pub async fn get_minimap(Query(q): Query<MinimapQuery>) -> Result<Json<MinimapRe
     };
 
     let filter = LineFilter::from_query(q.levels.as_deref(), q.fields.as_deref(), q.keywords.as_deref())
+        .and_then(|f| f.with_time_ms(q.time_from, q.time_to))
         .map_err(|e| ApiError(StatusCode::BAD_REQUEST, e))?;
     let matches = if !filter.is_empty() {
         Some(session.matches(filter).await?.0)
