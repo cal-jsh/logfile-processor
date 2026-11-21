@@ -19,12 +19,15 @@ _A 5 GB, 52 million line log: opened in about 3 seconds, filters in a fraction o
   Ctrl+F / Ctrl+G.
 - **Log formats.** spdlog-style formats are detected automatically (timestamp, level,
   logger, thread id or name). Anything else can be described with a pattern in the
-  Log format dialog, with a live preview.
+  Log format page of Settings, with a live preview.
 - **Minimap.** Where levels or domains occur across the file, by line or by time. Click
   to jump.
 - **Thread lanes.** One lane per thread (or domain) over time, coloured by level.
   Ctrl+wheel to zoom, click to jump to the line.
 - **Export.** The current view as text or CSV.
+- **Light and dark.** Follows the Windows setting, or pick Light or Dark in Settings
+  (sidebar footer, Ctrl+,). The window comes back where you left it (size, position, maximized),
+  along with the layout: open panels, minimap and lanes settings, hidden columns.
 - **Command line.** Open files from a terminal, or filter without a window
   (see below).
 - **Recent files**, drag and drop onto the window or the exe (Windows) or "Open
@@ -42,6 +45,7 @@ Both remember whether you left them open.
 | Ctrl+↓ / Ctrl+↑ | Show / hide the filter panel (also the Filter button in the status bar) |
 | Ctrl+F / Ctrl+G | Search in the view / go to line |
 | Ctrl+wheel | Zoom the thread lanes |
+| Ctrl+, | Settings (theme, log format) |
 
 The panel shortcuts are ignored while typing in a text field, where Ctrl+arrows move
 the cursor by word. Filters stay applied while the panel is hidden; the status bar

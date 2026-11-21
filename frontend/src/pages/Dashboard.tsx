@@ -12,6 +12,7 @@ import { cn } from "@/lib/utils";
 import type { MinimapAxis } from "../components/Minimap";
 import { formatDuration, formatRangeTime, RANGE_COLOR, type TimeRange } from "../components/TimeRangeSelect";
 import { RegexToggle } from "../components/RegexToggle";
+import { useTheme } from "../lib/theme";
 
 interface DashboardProps {
     sessionId: string;
@@ -74,6 +75,8 @@ async function checkRegex(baseUrl: string, pattern: string, signal?: AbortSignal
 }
 
 export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summary, fileName, onClose, onChangeFormat }) => {
+    // the level colours (sidebar, filter bar) follow the theme: render again when it changes
+    useTheme();
     const [selectedLevels, setSelectedLevels] = useState<string[]>([]);
     // values per filterable field (domain, thread, ...): none selected = all
     const [selectedFields, setSelectedFields] = useState<Record<string, string[]>>({});
@@ -113,7 +116,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
     const [debouncedKeywords, setDebouncedKeywords] = useState<string>("");
     const [debouncedPatterns, setDebouncedPatterns] = useState<string>("");
 
-    const [showDelta, setShowDelta] = useState(false); // controls delta display
+    const [showDelta, setShowDelta] = useStoredFlag("logviewer.showDelta", false); // controls delta display
     // level minimap above the rows; remembered per browser
     const [showMinimap, setShowMinimapState] = useState<boolean>(() => {
         try {

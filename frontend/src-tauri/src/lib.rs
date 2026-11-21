@@ -285,6 +285,62 @@ fn cli_help() -> CliHelp {
     CliHelp { usage: cli::usage(), cli_path }
 }
 
+/// Moves a restored window back onto a screen when its saved place is no longer usable:
+/// the monitor it was on is gone, or only a corner of it is still visible (the window
+/// state plugin accepts any corner on any monitor), or it is larger than the screen it
+/// is on now (moved from a big monitor to a laptop). The title bar has to be on a
+/// monitor's work area so the window can be grabbed; otherwise it is centred on the
+/// primary monitor, shrunk to fit if needed. A maximized window is left to Windows.
+fn keep_on_screen(window: &tauri::WebviewWindow) -> tauri::Result<()> {
+    if window.is_maximized()? || window.is_minimized()? {
+        return Ok(());
+    }
+    let pos = window.outer_position()?;
+    let size = window.outer_size()?;
+    let monitors = window.available_monitors()?;
+    // A point in the title bar, a little in from the left edge and the top
+    let (gx, gy) = (pos.x + (size.width as i32).min(200) / 2, pos.y + 12);
+    let holder = monitors.iter().find(|m| {
+        let a = m.work_area();
+        gx >= a.position.x
+            && gx < a.position.x + a.size.width as i32
+            && gy >= a.position.y
+            && gy < a.position.y + a.size.height as i32
+    });
+    let target = match holder {
+        Some(m) => m.clone(),
+        None => match window.primary_monitor()?.or_else(|| monitors.first().cloned()) {
+            Some(m) => m,
+            None => return Ok(()),
+        },
+    };
+    let area = *target.work_area();
+    let fits = size.width <= area.size.width && size.height <= area.size.height;
+    if holder.is_some() && fits {
+        return Ok(());
+    }
+    let width = size.width.min(area.size.width);
+    let height = size.height.min(area.size.height);
+    if !fits {
+        let inner = window.inner_size()?;
+        window.set_size(tauri::PhysicalSize::new(
+            inner.width.saturating_sub(size.width - width),
+            inner.height.saturating_sub(size.height - height),
+        ))?;
+    }
+    let (mut x, mut y) = (pos.x, pos.y);
+    if holder.is_none() {
+        x = area.position.x + (area.size.width - width) as i32 / 2;
+        y = area.position.y + (area.size.height - height) as i32 / 2;
+    }
+    // Keep the whole window inside the work area it ends up on
+    x = x.clamp(area.position.x, area.position.x + (area.size.width - width) as i32);
+    y = y.clamp(area.position.y, area.position.y + (area.size.height - height) as i32);
+    window.set_position(tauri::PhysicalPosition::new(x, y))?;
+    tracing::info!("Window moved back onto the screen ({}, {}) {}x{}", x, y, width, height);
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     run_with(None)
@@ -303,7 +359,24 @@ fn run_with(initial: Option<Result<String, String>>) {
         // release, verifies the installer's signature against plugins.updater.pubkey
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        // Remembers size, position and maximized state of the window between runs
+        // (`.window-state.json` in the app config folder). It restores while the window
+        // is created; `keep_on_screen` then fixes a place that no longer fits the screens.
+        .plugin(
+            tauri_plugin_window_state::Builder::new()
+                .with_state_flags(
+                    tauri_plugin_window_state::StateFlags::SIZE
+                        | tauri_plugin_window_state::StateFlags::POSITION
+                        | tauri_plugin_window_state::StateFlags::MAXIMIZED,
+                )
+                .build(),
+        )
         .setup(|app| {
+            if let Some(window) = app.get_webview_window("main") {
+                if let Err(e) = keep_on_screen(&window) {
+                    tracing::warn!("Could not check the window position: {}", e);
+                }
+            }
             // Bind before the window loads, so the UI can ask for the URL right away.
             let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
             listener.set_nonblocking(true)?;

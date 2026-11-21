@@ -4,7 +4,7 @@
  * `relative overflow-hidden`. Still (no motion) when the user prefers reduced motion.
  */
 export function IndexingSweep({ tone = "light" }: { tone?: "light" | "dark" }) {
-  const via = tone === "light" ? "via-white/20" : "via-foreground/20";
+  const via = tone === "light" ? "via-log-ink/20" : "via-foreground/20";
   return (
     <div
       aria-hidden
