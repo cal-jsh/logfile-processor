@@ -58,4 +58,7 @@ export type LogSummary = {
     /** The filterable fields (domain, thread, ...) with their values */
     fields: FieldValues[];
     format: FormatInfo;
+    /** Still being counted right after opening: this is the summary of the first 16 MB
+        only (no end time; its counts are not shown). GET /summary waits for the real one. */
+    pending?: boolean;
 };

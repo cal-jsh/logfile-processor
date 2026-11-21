@@ -9,9 +9,8 @@ pub mod logfile;
 pub mod model;
 pub mod parsing;
 
-use crate::log_storage::{get_user_log, remove_user_log, save_user_log, Session};
+use crate::log_storage::{get_user_log, remove_user_log, save_user_log, FormatChoice, Session};
 use crate::logfile::index::{sample_lines, LogFile};
-use crate::logfile::scan::summarize;
 use crate::model::upload_response::UploadResponse;
 use crate::parsing::format::{detect, sample_fit, LogFormat};
 use axum::Router;
@@ -19,7 +18,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 use tower_http::cors::{Any, CorsLayer};
-use tracing::{debug, info};
+use tracing::info;
 
 /// Routes for the desktop app: the viewport API only. No upload (files are opened in
 /// place by path), and CORS limited to the app's own webview origins.
@@ -100,16 +99,9 @@ fn start_session(path: PathBuf, file: Arc<LogFile>, pattern: Option<&str>) -> Re
     let ChosenFormat { format, detected, sample_lines, sample_matched } = choose_format(&file, pattern)?;
     let format_ms = started.elapsed().as_secs_f64() * 1000.0;
 
-    let started = Instant::now();
-    let mut summary = summarize(&file, &format);
-    let summary_ms = started.elapsed().as_secs_f64() * 1000.0;
-    summary.format.detected = detected;
-    summary.format.sample_lines = sample_lines;
-    summary.format.sample_matched = sample_matched;
-
     let index_ms = file.index_time.as_secs_f64() * 1000.0;
     info!(
-        "Indexed {} lines ({} bytes) of {} in {:.1} ms, format {} `{}` ({}/{} sample lines) in {:.1} ms, summary in {:.1} ms, session {}",
+        "Indexed {} lines ({} bytes) of {} in {:.1} ms, format {} `{}` ({}/{} sample lines) in {:.1} ms, session {}",
         file.line_count(),
         file.len(),
         path.display(),
@@ -119,11 +111,15 @@ fn start_session(path: PathBuf, file: Arc<LogFile>, pattern: Option<&str>) -> Re
         sample_matched,
         sample_lines,
         format_ms,
-        summary_ms,
         session_id
     );
-    debug!("Summary: {:?}", summary);
 
-    save_user_log(&session_id, Session::new(path, file, Arc::new(format)));
-    Ok(UploadResponse { session_id, summary, index_ms, summary_ms, format_ms })
+    // The file is shown right away. The summary, the level index and the unfiltered
+    // view come from one pass over the file, started here in the background; until it
+    // is done the summary is a pending one and the viewer shows the start of the file.
+    let choice = FormatChoice { detected, sample_lines, sample_matched };
+    let session = save_user_log(&session_id, Session::new(path, file, Arc::new(format), choice));
+    session.start_indexing();
+    let summary = session.pending_summary();
+    Ok(UploadResponse { session_id, summary, index_ms, summary_ms: 0.0, format_ms })
 }

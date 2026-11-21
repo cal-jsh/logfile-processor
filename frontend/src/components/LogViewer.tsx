@@ -11,6 +11,7 @@ import { ThreadLanes } from "./ThreadLanes";
 import { formatRange, type TimeRange } from "./TimeRangeSelect";
 import { isLineNumber, parseTimeInput, type ParsedTime } from "../lib/timeInput";
 import type { FieldDef } from "../lib/logSummary";
+import { IndexingSweep } from "./IndexingSweep";
 
 /*
  * Viewport-based log viewer.
@@ -50,6 +51,9 @@ type ViewInfo = {
   line_count: number;
   scan_ms: number;
   cached: boolean;
+  /** Only the start of the file is known yet (right after opening, while it is being
+      indexed): row_count is an estimate, the rows shown are exact */
+  partial?: boolean;
 };
 
 type SearchHit = { row: number; line_number: number; text: string; fields: string[] | null };
@@ -227,10 +231,31 @@ export const LogViewer = ({
 
     (async () => {
       try {
+        // Right after opening, the unfiltered view answers at once from the start of the
+        // file (`partial`) while the whole file is indexed: show those rows, then ask
+        // again for the whole view, which waits for the index. The rows shown stay as
+        // they are; only the row count (scrollbar) is corrected when it arrives.
+        let shownPartial = false;
+        if (anchorLine == null && !filterParams) {
+          const res = await fetch(`${baseUrl}/view?${viewParams}&partial=true`, { signal: ctrl.signal });
+          const v: ViewInfo | null = res.ok ? await res.json() : null;
+          if (v?.partial) {
+            setInfo(v);
+            setTop(0);
+            setLoading(false);
+            shownPartial = true;
+          }
+        }
         const res = await fetch(`${baseUrl}/view?${viewParams}`, { signal: ctrl.signal });
         if (res.status === 409) return; // superseded by a newer filter
         if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
         const v: ViewInfo = await res.json();
+        if (shownPartial) {
+          // keep the position the reader may have scrolled to meanwhile
+          setInfo(v);
+          setTop((t) => clamp(t, 0, Math.max(0, v.row_count - visibleRows)));
+          return;
+        }
         let start = 0;
         if (anchorLine != null) {
           const r = await fetch(`${baseUrl}/view/row_of_line?${viewParams}&line=${anchorLine}`, {
@@ -275,7 +300,7 @@ export const LogViewer = ({
       const ctrl = new AbortController();
       inflightRef.current.set(p, ctrl);
       const myPages = pages;
-      fetch(`${baseUrl}/view/rows?${viewParams}&first_row=${p * PAGE_SIZE}&count=${PAGE_SIZE}`, {
+      fetch(`${baseUrl}/view/rows?${viewParams}&first_row=${p * PAGE_SIZE}&count=${PAGE_SIZE}${info.partial ? "&partial=true" : ""}`, {
         signal: ctrl.signal,
       })
         .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
@@ -677,11 +702,20 @@ export const LogViewer = ({
       )}
 
       {/* Status bar + exports */}
-      <div className="flex items-center gap-2 border-b bg-muted/30 px-3 py-1">
+      <div className="relative flex items-center gap-2 border-b bg-muted/30 px-3 py-1">
+        {/* a thin sweep along the bottom edge while the file is still being indexed */}
+        {info?.partial && (
+          <div className="pointer-events-none absolute inset-x-0 -bottom-px h-0.5 overflow-hidden">
+            <IndexingSweep tone="dark" />
+          </div>
+        )}
         {statusStart}
         <div role="status" className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
           {error
             ? `Error: ${error}`
+            : info?.partial
+              ? `Indexing ${info.line_count.toLocaleString()} lines… · showing the start of the file` +
+                ` · rows ${(firstRow + 1).toLocaleString()}–${(firstRow + visibleRows).toLocaleString()}`
             : info
               ? `${info.match_count.toLocaleString()} matching lines` +
               (info.context > 0 ? `, ${info.row_count.toLocaleString()} rows with ±${info.context} context` : "") +

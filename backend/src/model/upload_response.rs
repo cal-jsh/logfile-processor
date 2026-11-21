@@ -12,7 +12,8 @@ pub struct UploadResponse {
     pub summary: LogSummary,
     /// Time to build the line index, in milliseconds
     pub index_ms: f64,
-    /// Time to compute the summary, in milliseconds
+    /// Time to compute the summary, in milliseconds (0: it is counted in the
+    /// background, see `LogSummary::pending`)
     pub summary_ms: f64,
     /// Time to detect (or check) the line format, in milliseconds
     pub format_ms: f64,
