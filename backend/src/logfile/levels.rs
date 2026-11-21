@@ -13,6 +13,8 @@
 //! Line numbers in this module are 0-based.
 
 use crate::logfile::index::LogFile;
+use crate::logfile::scan::{finish_summary, line_text, PartialSummary, SummaryPlan};
+use crate::model::log_summary::LogSummary;
 use crate::parsing::format::LogFormat;
 use rayon::prelude::*;
 use std::time::{Duration, Instant};
@@ -77,12 +79,29 @@ pub struct LevelIndex {
 
 impl LevelIndex {
     pub fn build(file: &LogFile, format: &LogFormat) -> Self {
+        Self::build_inner(file, format, None).0
+    }
+
+    /// Build the index and the file's summary in the same pass over the file (each
+    /// line is parsed once for both). The viewer opens a file with this, in the
+    /// background, so the summary, the minimap and the unfiltered view all wait for one
+    /// pass instead of three.
+    pub fn build_with_summary(file: &LogFile, format: &LogFormat) -> (Self, LogSummary) {
+        let plan = SummaryPlan::new(format);
+        let (idx, parts) = Self::build_inner(file, format, Some(&plan));
+        let summary = finish_summary(file, format, &plan, parts);
+        (idx, summary)
+    }
+
+    fn build_inner<'a>(file: &'a LogFile, format: &LogFormat, plan: Option<&SummaryPlan>) -> (Self, Vec<PartialSummary<'a>>) {
         let started = Instant::now();
         let line_count = file.line_count();
+        let level_field = format.level_field();
 
         // Each chunk packs its own lines. A chunk starting on an odd line leaves the low
         // half of its first byte empty, so neighbouring chunks are merged with OR.
-        let parts: Vec<(usize, Vec<u8>, Option<(i64, i64)>)> = file
+        type Part<'a> = (usize, Vec<u8>, Option<(i64, i64)>, Option<PartialSummary<'a>>);
+        let parts: Vec<Part<'a>> = file
             .chunks()
             .par_iter()
             .map(|chunk| {
@@ -91,9 +110,20 @@ impl LevelIndex {
                 let mut byte = 0u8;
                 let mut line = first;
                 let mut span: Option<(i64, i64)> = None;
+                let mut summary = plan.map(PartialSummary::new);
                 for (_, bytes) in file.chunk_lines(chunk) {
                     // the same field split as the summary and the filter
-                    let (c, ts) = format.code_and_time(bytes);
+                    let text = line_text(bytes);
+                    let (c, ts) = match format.parse(&text) {
+                        None => (code::NONE, None),
+                        Some(p) => {
+                            if let (Some(plan), Some(s)) = (plan, summary.as_mut()) {
+                                s.add_parsed(plan, &text, &p);
+                            }
+                            let c = level_field.map_or(code::OTHER, |l| level_code(p.get(&text, l)));
+                            (c, format.time_ns(&text, &p))
+                        }
+                    };
                     if let Some(ts) = ts {
                         span = Some(span.map_or((ts, ts), |(a, b)| (a.min(ts), b.max(ts))));
                     }
@@ -110,15 +140,17 @@ impl LevelIndex {
                 }
                 // when the chunk starts on an odd line, its first value went into the
                 // high half of the byte `first / 2` (whose low half is the previous chunk's)
-                ((first / 2) as usize, out, span)
+                ((first / 2) as usize, out, span, summary)
             })
             .collect();
 
         let mut packed = vec![0u8; line_count.div_ceil(2) as usize];
         let mut time_span: Option<(i64, i64)> = None;
         let mut chunk_spans = Vec::with_capacity(parts.len());
-        for (at, bytes, span) in parts {
+        let mut summaries = Vec::new();
+        for (at, bytes, span, summary) in parts {
             chunk_spans.push(span);
+            summaries.extend(summary);
             if let Some((a, b)) = span {
                 time_span = Some(time_span.map_or((a, b), |(x, y)| (x.min(a), y.max(b))));
             }
@@ -136,7 +168,51 @@ impl LevelIndex {
                 *m = bytes.iter().fold(0u8, |acc, &b| acc.max(b & 0x0f).max(b >> 4));
             });
 
-        Self { packed, blocks, line_count, time_span, chunk_spans, build_time: started.elapsed() }
+        (Self { packed, blocks, line_count, time_span, chunk_spans, build_time: started.elapsed() }, summaries)
+    }
+
+    /// The lines in the log format (code other than [`code::NONE`]) as sorted, disjoint,
+    /// non-adjacent half-open ranges: the unfiltered view, without scanning the file again.
+    pub fn format_ranges(&self) -> Vec<(u64, u64)> {
+        // in parallel over slices of whole bytes (an even number of lines each)
+        const PART_BYTES: usize = 1 << 20;
+        let parts: Vec<Vec<(u64, u64)>> = self
+            .packed
+            .par_chunks(PART_BYTES)
+            .enumerate()
+            .map(|(k, bytes)| {
+                let first = (k * PART_BYTES * 2) as u64;
+                let end = (first + bytes.len() as u64 * 2).min(self.line_count);
+                let mut ranges: Vec<(u64, u64)> = Vec::new();
+                let mut run: Option<u64> = None;
+                for line in first..end {
+                    let b = bytes[((line - first) / 2) as usize];
+                    let c = if line % 2 == 0 { b & 0x0f } else { b >> 4 };
+                    match (c != code::NONE, run) {
+                        (true, None) => run = Some(line),
+                        (false, Some(s)) => {
+                            ranges.push((s, line));
+                            run = None;
+                        }
+                        _ => {}
+                    }
+                }
+                if let Some(s) = run {
+                    ranges.push((s, end));
+                }
+                ranges
+            })
+            .collect();
+        let mut ranges: Vec<(u64, u64)> = Vec::new();
+        for part in parts {
+            for r in part {
+                match ranges.last_mut() {
+                    Some(last) if last.1 == r.0 => last.1 = r.1,
+                    _ => ranges.push(r),
+                }
+            }
+        }
+        ranges
     }
 
     pub fn line_count(&self) -> u64 {

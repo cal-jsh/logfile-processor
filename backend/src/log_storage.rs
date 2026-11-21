@@ -7,7 +7,8 @@ use crate::logfile::lanes::{LaneBins, LaneIndex};
 use crate::logfile::view::LaneKey;
 use crate::logfile::levels::LevelIndex;
 use crate::logfile::timeline::TimeBins;
-use crate::logfile::scan::{scan_matches, Cancelled, CompiledFilter};
+use crate::logfile::scan::{pending_summary, scan_head, scan_matches, Cancelled, CompiledFilter};
+use crate::model::log_summary::LogSummary;
 use crate::logfile::view::MatchSet;
 use crate::parsing::format::LogFormat;
 use crate::parsing::line_filter::LineFilter;
@@ -32,8 +33,16 @@ pub struct Session {
     /// How lines are split into fields
     pub format: Arc<LogFormat>,
     queries: Mutex<QueryCache>,
-    /// Per-line log levels for the minimap, built on first use.
+    /// Per-line log levels for the minimap, built in the background when the file is
+    /// opened (see [`Session::start_indexing`]) or on first use.
     levels: tokio::sync::OnceCell<Arc<LevelIndex>>,
+    /// The file's summary, counted in the same pass as `levels`.
+    summary: std::sync::OnceLock<Arc<LogSummary>>,
+    /// How the format was chosen, copied into the summary.
+    format_choice: FormatChoice,
+    /// The unfiltered matches of the first index chunk, to show the first rows before
+    /// the whole file is indexed. Computed on first use.
+    head: std::sync::OnceLock<Arc<(MatchSet, u64)>>,
     /// All log lines binned by time (minimap "by time"), built on first use.
     time_bins: tokio::sync::OnceCell<Arc<TimeBins>>,
     /// Per-line categories of a field (minimap colouring), per field name, built on first use.
@@ -65,9 +74,83 @@ pub enum QueryError {
     Internal(String),
 }
 
+/// How the line format of a session was chosen (shown with the summary).
+#[derive(Clone, Copy, Default)]
+pub struct FormatChoice {
+    pub detected: bool,
+    pub sample_lines: usize,
+    pub sample_matched: usize,
+}
+
+/// Index chunks (16 MB each) scanned for the first rows of the unfiltered view.
+const HEAD_CHUNKS: usize = 1;
+
 impl Session {
-    pub fn new(path: PathBuf, file: Arc<LogFile>, format: Arc<LogFormat>) -> Self {
-        Self { path, file, format, queries: Mutex::new(QueryCache::default()), levels: Default::default(), time_bins: Default::default(), categories: Default::default(), category_time_bins: Default::default(), lanes: Default::default(), lane_windows: Default::default() }
+    pub fn new(path: PathBuf, file: Arc<LogFile>, format: Arc<LogFormat>, format_choice: FormatChoice) -> Self {
+        Self {
+            path,
+            file,
+            format,
+            queries: Mutex::new(QueryCache::default()),
+            levels: Default::default(),
+            summary: Default::default(),
+            format_choice,
+            head: Default::default(),
+            time_bins: Default::default(),
+            categories: Default::default(),
+            category_time_bins: Default::default(),
+            lanes: Default::default(),
+            lane_windows: Default::default(),
+        }
+    }
+
+    /// Build the level index (and with it the summary and the unfiltered view) in the
+    /// background now, instead of when the first request needs it. Requests that need
+    /// it meanwhile wait for this build rather than starting their own. Does nothing
+    /// outside a Tokio runtime (the index is then built on first use).
+    pub fn start_indexing(self: &Arc<Self>) {
+        if let Ok(rt) = tokio::runtime::Handle::try_current() {
+            let s = self.clone();
+            rt.spawn(async move {
+                let _ = s.levels().await;
+            });
+        }
+    }
+
+    /// The summary while it is not counted yet: line count and format only.
+    pub fn pending_summary(&self) -> LogSummary {
+        self.fill_choice(pending_summary(&self.file, &self.format))
+    }
+
+    /// The file's summary, counted (once) together with the level index.
+    pub async fn summary(&self) -> Result<Arc<LogSummary>, QueryError> {
+        self.levels().await?;
+        self.summary.get().cloned().ok_or_else(|| QueryError::Internal("summary missing".into()))
+    }
+
+    fn fill_choice(&self, mut s: LogSummary) -> LogSummary {
+        s.format.detected = self.format_choice.detected;
+        s.format.sample_lines = self.format_choice.sample_lines;
+        s.format.sample_matched = self.format_choice.sample_matched;
+        s
+    }
+
+    /// The cached result of `filter` if it is complete, without waiting or scanning.
+    pub fn cached_matches(&self, filter: &LineFilter) -> Option<Arc<MatchSet>> {
+        let key = cache_key(filter);
+        let q = self.queries.lock().unwrap();
+        q.entries.iter().find(|(k, _)| *k == key).and_then(|(_, c)| c.get().cloned())
+    }
+
+    /// The unfiltered matches of the start of the file and the line they are exact up
+    /// to (see [`scan_head`]). Cheap: one index chunk.
+    pub fn head(&self) -> Arc<(MatchSet, u64)> {
+        self.head
+            .get_or_init(|| {
+                let filter = CompiledFilter::new(LineFilter::default(), self.format.clone());
+                Arc::new(scan_head(&self.file, &filter, HEAD_CHUNKS))
+            })
+            .clone()
     }
 
     /// The lines matching `filter`, from the cache or by scanning the file.
@@ -99,11 +182,10 @@ impl Session {
         };
 
         // A time range skips the index chunks outside it, known from the level index
-        // (usually built already for the minimap).
-        let levels = match filter.time {
-            Some(_) => Some(self.levels().await?.0),
-            None => None,
-        };
+        // (usually built already for the minimap). The unfiltered view is read from the
+        // level index (the lines in the format), so it needs no scan of its own.
+        let unfiltered = filter.is_empty();
+        let levels = if filter.time.is_some() || unfiltered { Some(self.levels().await?.0) } else { None };
 
         // Run the scan in a detached task, so the result is cached even if the client
         // that asked for it disconnects; later requests wait on the same cell.
@@ -112,6 +194,14 @@ impl Session {
         let cancel = self.start_scan(&key);
         let task = tokio::spawn(async move {
             cell.get_or_try_init(|| async move {
+                if let (true, Some(l)) = (unfiltered, &levels) {
+                    let l = l.clone();
+                    let started = std::time::Instant::now();
+                    let ranges = tokio::task::spawn_blocking(move || l.format_ranges())
+                        .await
+                        .map_err(|e| QueryError::Internal(e.to_string()))?;
+                    return Ok(Arc::new(MatchSet::new(ranges, file.line_count(), started.elapsed())));
+                }
                 let mut compiled = CompiledFilter::new(filter, format);
                 if let Some(l) = levels {
                     compiled = compiled.with_chunk_spans(l);
@@ -150,14 +240,15 @@ impl Session {
         let l = self
             .levels
             .get_or_try_init(|| async move {
-                let idx = tokio::task::spawn_blocking(move || LevelIndex::build(&file, &format))
+                let (idx, summary) = tokio::task::spawn_blocking(move || INDEX_POOL.install(|| LevelIndex::build_with_summary(&file, &format)))
                     .await
                     .map_err(|e| QueryError::Internal(e.to_string()))?;
                 info!(
-                    "Level index of {} lines built in {} ms",
+                    "Level index and summary of {} lines built in {} ms",
                     idx.line_count(),
                     idx.build_time.as_millis()
                 );
+                let _ = self.summary.set(Arc::new(self.fill_choice(summary)));
                 Ok::<_, QueryError>(Arc::new(idx))
             })
             .await?;
@@ -294,18 +385,32 @@ fn cache_key(f: &LineFilter) -> String {
     format!("{:?}|{:?}|{:?}|{:?}", f.levels, f.fields, f.keywords, f.time)
 }
 
+/// Threads of the pass that indexes a file after it is opened: all cores but two. On
+/// every core it left the window too little CPU to draw the first rows (on 16 cores,
+/// 5 GB: rows on screen after 1.7 s instead of 0.9 s), for a pass only ~5% faster.
+static INDEX_POOL: Lazy<rayon::ThreadPool> = Lazy::new(|| {
+    let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(cores.saturating_sub(2).max(1))
+        .thread_name(|i| format!("index-{i}"))
+        .build()
+        .expect("index thread pool")
+});
+
 static LOG_STORAGE: Lazy<Mutex<HashMap<String, Arc<Session>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
 /// Save a user's opened log
-pub fn save_user_log(session_id: &str, session: Session) {
+pub fn save_user_log(session_id: &str, session: Session) -> Arc<Session> {
+    let session = Arc::new(session);
     let count = {
         let mut map = LOG_STORAGE.lock().unwrap();
-        map.insert(session_id.to_string(), Arc::new(session));
+        map.insert(session_id.to_string(), session.clone());
         map.len()
     };
     info!("Saved log for session_id: {}", session_id);
     info!("Currently {} log files stored", count);
+    session
 }
 
 /// Retrieve a user's opened log

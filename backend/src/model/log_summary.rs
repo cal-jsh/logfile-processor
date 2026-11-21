@@ -28,6 +28,10 @@ pub struct LogSummary {
     /// The line format used for this file
     #[schema(value_type = Object)]
     pub format: FormatInfo,
+    /// Still being counted: this is the summary of the start of the file only (see
+    /// `scan::pending_summary`). The file is shown already; `GET /summary` waits for the
+    /// real one.
+    pub pending: bool,
 }
 
 /// The distinct values of one field.

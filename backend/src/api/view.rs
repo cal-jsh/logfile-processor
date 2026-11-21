@@ -6,6 +6,8 @@
 //!   numbers, and expands them by `context` lines. It returns the row count.
 //! * `GET /view/rows` returns the text of a range of rows of that view.
 //! * `GET /view/matches` returns the match line numbers themselves.
+//! * `GET /summary` returns the file's summary once it is counted (opening a file
+//!   returns a pending one, see `LogSummary::pending`).
 //! * `GET /view/row_of_line`, `/view/row_of_time` and `/view/search` support jumping
 //!   and searching inside the results. Exporting them to a file is `export_view_to_file`, called by the
 //!   desktop app.
@@ -14,6 +16,7 @@
 //! rescans the file. All line numbers in this API are 1-based; rows are 0-based.
 
 use crate::log_storage::{get_user_log, remove_user_log, QueryError, Session};
+use crate::model::log_summary::LogSummary;
 use crate::logfile::index::{display_text, LogFile};
 use crate::logfile::view::{MatchSet, View, ViewLines};
 use rayon::prelude::*;
@@ -43,6 +46,7 @@ const SEARCH_TIME_BUDGET: Duration = Duration::from_secs(3);
 pub fn router() -> Router {
     Router::new()
         .route("/lines", get(get_lines))
+        .route("/summary", get(get_summary))
         .route("/view", get(get_view))
         .route("/view/rows", get(get_view_rows))
         .route("/view/matches", get(get_view_matches))
@@ -81,6 +85,9 @@ pub struct ViewQuery {
     pub from_row: Option<u64>,
     /// `txt` (default) or `csv`
     pub format: Option<String>,
+    /// `/view` and `/view/rows` without a filter: answer from the start of the file
+    /// while the whole file is still being indexed, instead of waiting (see [`get_view`])
+    pub partial: Option<bool>,
 }
 
 impl ViewQuery {
@@ -193,12 +200,67 @@ pub struct ViewInfo {
     pub scan_ms: f64,
     /// The scan result came from the cache (no rescan)
     pub cached: bool,
+    /// Only the start of the file is known yet (asked with `partial=true`): `row_count`
+    /// and `match_count` are estimates, and rows past the known start wait for the
+    /// whole result. Ask again without `partial` to get it.
+    pub partial: bool,
+}
+
+/// The start of the unfiltered view, from the first index chunk, while the whole file is
+/// being indexed: the view of those matches and the number of its rows that are exact.
+/// `None` when the whole result is ready (or the query has a filter).
+async fn head_view(q: &ViewQuery) -> Result<Option<(Arc<Session>, Arc<(MatchSet, u64)>, Arc<View>, u64)>, ApiError> {
+    if q.partial != Some(true) {
+        return Ok(None);
+    }
+    let filter = q.filter()?;
+    let session = session(&q.session_id)?;
+    if !filter.is_empty() || session.cached_matches(&filter).is_some() {
+        return Ok(None);
+    }
+    let s = session.clone();
+    let head = blocking(move || s.head()).await?;
+    let context = q.context.unwrap_or(0);
+    let view = head.0.view(context);
+    let end = head.1;
+    // Rows of lines before `end - context` are the same in the whole view: a match after
+    // `end` adds context lines from `end - context` on at most.
+    let exact = if end >= session.file.line_count() { view.row_count() } else { view.row_of_line(end.saturating_sub(context)) };
+    Ok(Some((session, head, view, exact)))
+}
+
+/// The file's summary (level counts, field values, time span), waiting until it is
+/// counted. It is counted in the background from the moment the file is opened, in the
+/// same pass as the level index.
+pub async fn get_summary(Query(q): Query<CloseSessionQuery>) -> Result<Response, ApiError> {
+    let session = session(&q.session_id)?;
+    let summary = session.summary().await?;
+    Ok(Json::<&LogSummary>(&summary).into_response())
 }
 
 /// Filter the file (or reuse a cached result) and return the size of the view.
+///
+/// With `partial=true` and no filter, while the file is still being indexed after
+/// opening, it answers at once from the first index chunk (see [`ViewInfo::partial`]),
+/// so the first rows show without waiting for the whole file.
 pub async fn get_view(Query(q): Query<ViewQuery>) -> Result<Json<ViewInfo>, ApiError> {
     debug!("View request: {:?}", q);
     let started = Instant::now();
+    if let Some((session, head, view, _)) = head_view(&q).await? {
+        // every line after the known start counted as a row: exact when all of them are
+        // in the log format, an upper bound otherwise
+        let rest = session.file.line_count().saturating_sub(head.1);
+        info!("View: start of the file ({} rows exact so far) in {:.1} ms", view.row_count(), started.elapsed().as_secs_f64() * 1000.0);
+        return Ok(Json(ViewInfo {
+            row_count: view.row_count() + rest,
+            match_count: head.0.match_count() + rest,
+            context: view.context,
+            line_count: session.file.line_count(),
+            scan_ms: head.0.scan_time.as_secs_f64() * 1000.0,
+            cached: false,
+            partial: true,
+        }));
+    }
     let r = resolve(&q).await?;
     info!(
         "View: {} matches, {} rows (context {}), {} in {:.1} ms",
@@ -215,6 +277,7 @@ pub async fn get_view(Query(q): Query<ViewQuery>) -> Result<Json<ViewInfo>, ApiE
         line_count: r.matches.line_count(),
         scan_ms: r.matches.scan_time.as_secs_f64() * 1000.0,
         cached: r.cached,
+        partial: false,
     }))
 }
 
@@ -263,11 +326,20 @@ fn read_rows(file: &LogFile, format: &LogFormat, matches: &MatchSet, view: &View
         .collect()
 }
 
-/// Text of rows `first_row..first_row+count` of the view.
+/// Text of rows `first_row..first_row+count` of the view. With `partial=true` (see
+/// [`get_view`]), rows at the start of the file are read from its first index chunk
+/// while the file is still being indexed; later rows wait for the whole result.
 pub async fn get_view_rows(Query(q): Query<ViewQuery>) -> Result<Json<RowsResponse>, ApiError> {
-    let r = resolve(&q).await?;
     let first = q.first_row.unwrap_or(0);
     let count = q.count.unwrap_or(100).min(MAX_ROWS_PER_REQUEST);
+    if let Some((session, head, view, exact)) = head_view(&q).await? {
+        if first.saturating_add(count) <= exact {
+            let row_count = view.row_count();
+            let rows = blocking(move || read_rows(&session.file, &session.format, &head.0, &view, first, count)).await?;
+            return Ok(Json(RowsResponse { row_count, rows }));
+        }
+    }
+    let r = resolve(&q).await?;
     let row_count = r.view.row_count();
     let rows = blocking(move || read_rows(&r.session.file, &r.session.format, &r.matches, &r.view, first, count)).await?;
     Ok(Json(RowsResponse { row_count, rows }))
@@ -661,6 +733,83 @@ pub async fn close_session(Query(query): Query<CloseSessionQuery>) -> Json<&'sta
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::log_storage::{save_user_log, FormatChoice};
+    use crate::logfile::scan::summarize;
+    use crate::parsing::format::LEGACY_PATTERN;
+
+    fn query(params: &str) -> ViewQuery {
+        let uri: axum::http::Uri = format!("http://x/view?{params}").parse().unwrap();
+        Query::<ViewQuery>::try_from_uri(&uri).unwrap().0
+    }
+
+    fn rows_json(r: Result<Json<RowsResponse>, ApiError>) -> serde_json::Value {
+        serde_json::to_value(&r.ok().expect("rows").0.rows).unwrap()
+    }
+
+    /// Opening a big file shows its first rows from the first index chunk while the
+    /// rest is indexed; those rows are the same as in the finished view.
+    #[tokio::test]
+    async fn partial_view_rows_equal_the_whole_view() {
+        let mut text = String::new();
+        for i in 0..4000 {
+            let level = ["INFO", "WARN", "ERROR", "DEBUG"][i % 4];
+            text.push_str(&format!("[2025-01-01 00:00:{:02}] [{level}] [core] line {i}\n", i % 60));
+            if i % 7 == 0 {
+                text.push_str("    at a stack trace line\n");
+            }
+        }
+        let fmt = Arc::new(LogFormat::compile(LEGACY_PATTERN).unwrap());
+        let file = Arc::new(LogFile::from_test_bytes(text.as_bytes(), 8192));
+        assert!(file.chunks().len() > 10);
+        let expected_summary = summarize(&file, &fmt);
+        for context in [0u64, 2] {
+            let id = uuid::Uuid::new_v4().to_string();
+            let session = save_user_log(&id, Session::new("test.log".into(), file.clone(), fmt.clone(), FormatChoice::default()));
+            assert!(session.pending_summary().pending);
+            let q = |extra: &str| query(&format!("session_id={id}&context={context}{extra}"));
+
+            let partial = get_view(Query(q("&partial=true"))).await.ok().unwrap().0;
+            assert!(partial.partial);
+            let (_, _, _, exact) = head_view(&q("&partial=true")).await.ok().unwrap().unwrap();
+            assert!(exact > 0 && exact < partial.row_count);
+            let head_rows = rows_json(get_view_rows(Query(q(&format!("&partial=true&first_row=0&count={exact}")))).await);
+            // served from the start of the file: nothing waited for the whole view
+            assert!(session.cached_matches(&LineFilter::default()).is_none());
+
+            let whole = get_view(Query(q(""))).await.ok().unwrap().0;
+            assert!(!whole.partial);
+            // the estimate counts every later line, so it is never below the real count
+            assert!(partial.row_count >= whole.row_count);
+            assert_eq!(head_rows, rows_json(get_view_rows(Query(q(&format!("&first_row=0&count={exact}")))).await));
+            // once the whole view is there, `partial` gets it
+            assert!(!get_view(Query(q("&partial=true"))).await.ok().unwrap().0.partial);
+
+            let s = session.summary().await.ok().unwrap();
+            assert!(!s.pending);
+            assert_eq!(s.levels, expected_summary.levels);
+            assert_eq!(s.total_lines, expected_summary.total_lines);
+            remove_user_log(&id);
+        }
+    }
+
+    /// Rows past the known start of the file wait for the whole view instead of
+    /// showing a guess.
+    #[tokio::test]
+    async fn partial_rows_past_the_known_start_wait_for_the_whole_view() {
+        let mut text = String::new();
+        for i in 0..3000 {
+            text.push_str(&format!("[2025-01-01 00:00:00] [INFO] [core] line {i}\n"));
+        }
+        let fmt = Arc::new(LogFormat::compile(LEGACY_PATTERN).unwrap());
+        let file = Arc::new(LogFile::from_test_bytes(text.as_bytes(), 4096));
+        let id = uuid::Uuid::new_v4().to_string();
+        let session = save_user_log(&id, Session::new("test.log".into(), file.clone(), fmt, FormatChoice::default()));
+        let q = query(&format!("session_id={id}&partial=true&first_row=2500&count=10"));
+        let rows = get_view_rows(Query(q)).await.ok().unwrap().0;
+        assert_eq!(rows.rows[0].line_number, 2501);
+        assert!(session.cached_matches(&LineFilter::default()).is_some());
+        remove_user_log(&id);
+    }
 
     #[test]
     fn csv_quoting() {

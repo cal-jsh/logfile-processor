@@ -48,6 +48,18 @@
   --color-update: var(--update);
   --color-update-foreground: var(--update-foreground);
   --animate-update-halo: update-halo 2.4s ease-out 4;
+  /* IndexingSweep: while a file is being indexed after opening */
+  --animate-indexing: indexing-sweep 1.6s ease-in-out infinite;
+}
+
+/* A soft band crossing a bar from left to right */
+@keyframes indexing-sweep {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(300%);
+  }
 }
 
 /* An ink ring that spreads from the update icon and fades, a few times after it appears */

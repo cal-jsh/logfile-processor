@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { colorMap, groupColors, OTHER_GROUP_COLOR } from "../lib/colorMap";
 import { RangeShade, rangeCursor, useTimeRangeDrag, type TimeRange } from "./TimeRangeSelect";
+import { IndexingSweep } from "./IndexingSweep";
 
 /*
  * Horizontal minimap of the whole file: one vertical line per pixel column, colored by
@@ -436,6 +437,13 @@ export function Minimap({
         aria-valuenow={visible?.first ?? 1}
       >
         <canvas ref={canvasRef} className="absolute inset-0 h-full w-full" style={{ imageRendering: "pixelated" }} />
+        {/* first load: the file is still being indexed; the bar stays neutral until then */}
+        {!fetched && (loading || !pxWidth) && (
+          <div className="pointer-events-none absolute inset-0 overflow-hidden">
+            <IndexingSweep />
+            <div className="absolute inset-y-0 left-3 flex items-center font-mono text-[10px] text-white/45">Indexing…</div>
+          </div>
+        )}
 
         {shownRange && <RangeShade range={shownRange} vf={t0} vt={t1} width={cssWidth} draft={!!range.draft} dim={0.25} />}
 

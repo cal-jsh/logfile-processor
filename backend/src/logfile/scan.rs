@@ -4,7 +4,7 @@
 use crate::logfile::index::{Chunk, LogFile};
 use crate::logfile::view::MatchSet;
 use crate::model::log_summary::{FieldValues, FormatInfo, LogSummary};
-use crate::parsing::format::{FieldKind, LogFormat};
+use crate::parsing::format::{FieldKind, LogFormat, Parsed};
 use crate::parsing::line_filter::LineFilter;
 use memchr::memmem;
 use rayon::prelude::*;
@@ -193,6 +193,21 @@ pub fn scan_matches(
     Ok(MatchSet::new(ranges, file.line_count(), started.elapsed()))
 }
 
+/// Like [`scan_matches`], but only over the first `chunks` index chunks: a quick look at
+/// the start of the file while the whole result is still being computed. Returns the
+/// matches (line count of the whole file) and the line the scanned part ends at; the
+/// matches before that line are the same as those of the whole scan.
+pub fn scan_head(file: &LogFile, filter: &CompiledFilter, chunks: usize) -> (MatchSet, u64) {
+    let started = Instant::now();
+    let head = &file.chunks()[..chunks.min(file.chunks().len())];
+    let mut ranges: Vec<(u64, u64)> = Vec::new();
+    for (i, chunk) in head.iter().enumerate() {
+        append_ranges(&mut ranges, chunk_matches(file, filter, i, chunk));
+    }
+    let end = head.last().map_or(0, |c| c.first_line + c.line_count);
+    (MatchSet::new(ranges, file.line_count(), started.elapsed()), end)
+}
+
 /// Like [`scan_matches`], but hands the matching runs to `sink` a few chunks at a time,
 /// in file order, while the next chunks are scanned. Memory stays bounded however many
 /// lines match (the command line writes them out as they come). A run may continue
@@ -231,14 +246,26 @@ pub fn scan_streaming<E>(
 }
 
 /// Which fields the summary looks at.
-struct SummaryPlan {
+pub(crate) struct SummaryPlan {
     level: Option<usize>,
     time: Option<usize>,
     /// Filterable fields (indices into the format's fields)
     fields: Vec<usize>,
 }
 
-struct PartialSummary<'a> {
+impl SummaryPlan {
+    pub(crate) fn new(format: &LogFormat) -> Self {
+        let defs = format.fields();
+        Self {
+            level: format.level_field(),
+            time: format.time_field(),
+            fields: (0..defs.len()).filter(|&i| defs[i].filterable && defs[i].kind == FieldKind::Text).collect(),
+        }
+    }
+}
+
+/// The summary of one index chunk, merged by [`finish_summary`].
+pub(crate) struct PartialSummary<'a> {
     total_lines: usize,
     levels: HashMap<Cow<'a, str>, usize>,
     /// Distinct values per filterable field (same order as `SummaryPlan::fields`)
@@ -249,8 +276,17 @@ struct PartialSummary<'a> {
     last_ts: Option<Cow<'a, str>>,
 }
 
+/// The text of a line of the memory map: borrowed when it is valid UTF-8, otherwise
+/// with invalid bytes replaced (as the old line reader did).
+pub(crate) fn line_text(bytes: &[u8]) -> Cow<'_, str> {
+    match std::str::from_utf8(bytes) {
+        Ok(s) => Cow::Borrowed(s),
+        Err(_) => String::from_utf8_lossy(bytes),
+    }
+}
+
 impl<'a> PartialSummary<'a> {
-    fn new(plan: &SummaryPlan) -> Self {
+    pub(crate) fn new(plan: &SummaryPlan) -> Self {
         Self {
             total_lines: 0,
             levels: HashMap::new(),
@@ -258,6 +294,15 @@ impl<'a> PartialSummary<'a> {
             more: vec![false; plan.fields.len()],
             first_ts: None,
             last_ts: None,
+        }
+    }
+
+    /// Count one line in the format, split as `parsed`. Values of a borrowed line are
+    /// borrowed from the memory map, not copied.
+    pub(crate) fn add_parsed(&mut self, plan: &SummaryPlan, line: &Cow<'a, str>, parsed: &Parsed) {
+        match line {
+            Cow::Borrowed(s) => self.add(plan, |i| Cow::Borrowed(parsed.get(s, i))),
+            Cow::Owned(s) => self.add(plan, |i| Cow::Owned(parsed.get(s, i).to_string())),
         }
     }
 
@@ -293,38 +338,35 @@ impl<'a> PartialSummary<'a> {
 /// Count the log lines, levels and field values of the file, in parallel over the
 /// memory-mapped file. Valid UTF-8 lines are borrowed from the map, not copied.
 /// The sample counts in `format` are left at 0 for the caller to fill in.
+///
+/// The viewer gets the same summary from
+/// [`LevelIndex::build_with_summary`](crate::logfile::levels::LevelIndex::build_with_summary),
+/// which shares the pass over the file with the level index.
 pub fn summarize(file: &LogFile, format: &LogFormat) -> LogSummary {
-    let defs = format.fields();
-    let plan = SummaryPlan {
-        level: format.level_field(),
-        time: format.time_field(),
-        fields: (0..defs.len()).filter(|&i| defs[i].filterable && defs[i].kind == FieldKind::Text).collect(),
-    };
-    let parts: Vec<PartialSummary<'_>> = file
-        .chunks()
+    summarize_chunks(file, format, file.chunks())
+}
+
+fn summarize_chunks(file: &LogFile, format: &LogFormat, chunks: &[Chunk]) -> LogSummary {
+    let plan = SummaryPlan::new(format);
+    let parts: Vec<PartialSummary<'_>> = chunks
         .par_iter()
         .map(|chunk| {
             let mut p = PartialSummary::new(&plan);
             for (_, bytes) in file.chunk_lines(chunk) {
-                match std::str::from_utf8(bytes) {
-                    Ok(line) => {
-                        if let Some(f) = format.parse(line) {
-                            p.add(&plan, |i| Cow::Borrowed(f.get(line, i)));
-                        }
-                    }
-                    Err(_) => {
-                        // invalid UTF-8 is replaced, as the old line reader did
-                        let line = String::from_utf8_lossy(bytes);
-                        if let Some(f) = format.parse(&line) {
-                            p.add(&plan, |i| Cow::Owned(f.get(&line, i).to_string()));
-                        }
-                    }
+                let line = line_text(bytes);
+                if let Some(f) = format.parse(&line) {
+                    p.add_parsed(&plan, &line, &f);
                 }
             }
             p
         })
         .collect();
+    finish_summary(file, format, &plan, parts)
+}
 
+/// Merge the chunk summaries (in file order) into the summary of the file.
+pub(crate) fn finish_summary(file: &LogFile, format: &LogFormat, plan: &SummaryPlan, parts: Vec<PartialSummary<'_>>) -> LogSummary {
+    let defs = format.fields();
     // merge in file order
     let mut levels: HashMap<String, usize> = HashMap::new();
     let mut values: Vec<HashSet<String>> = plan.fields.iter().map(|_| HashSet::new()).collect();
@@ -376,15 +418,33 @@ pub fn summarize(file: &LogFile, format: &LogFormat) -> LogSummary {
         stop_ms: ms(&stop_timestamp),
         start_timestamp,
         stop_timestamp,
-        format: FormatInfo {
-            pattern: format.pattern().to_string(),
-            detected: true,
-            raw: format.is_raw(),
-            sample_lines: 0,
-            sample_matched: 0,
-            columns: defs.to_vec(),
-        },
+        pending: false,
+        format: format_info(format),
     }
+}
+
+fn format_info(format: &LogFormat) -> FormatInfo {
+    FormatInfo {
+        pattern: format.pattern().to_string(),
+        detected: true,
+        raw: format.is_raw(),
+        sample_lines: 0,
+        sample_matched: 0,
+        columns: format.fields().to_vec(),
+    }
+}
+
+/// The summary to show while the real one is being counted (see
+/// [`LogSummary::pending`]): that of the first index chunk only (16 MB), without the end
+/// time. Its levels and field values let the viewer line up the columns of the first
+/// rows as they will stay; its counts are not shown.
+pub fn pending_summary(file: &LogFile, format: &LogFormat) -> LogSummary {
+    let head = &file.chunks()[..file.chunks().len().min(1)];
+    let mut s = summarize_chunks(file, format, head);
+    s.pending = true;
+    s.stop_timestamp = None;
+    s.stop_ms = None;
+    s
 }
 
 /// Sort numbers by value (thread ids), everything else alphabetically, numbers first.
@@ -611,6 +671,77 @@ mod tests {
         assert!(!s.fields[0].more);
         assert_eq!(s.start_timestamp.as_deref(), Some("2025-01-01 00:00:00"));
         assert_eq!(s.stop_timestamp.as_deref(), Some("2025-01-01 00:00:59"));
+    }
+
+    #[test]
+    fn one_pass_index_and_summary_equal_the_separate_passes() {
+        let text = sample();
+        let fmt = legacy();
+        for chunk_size in [64, 257, 4096, 1 << 20] {
+            let file = LogFile::from_test_bytes(text.as_bytes(), chunk_size);
+            let (idx, s) = crate::logfile::levels::LevelIndex::build_with_summary(&file, &fmt);
+            let alone = crate::logfile::levels::LevelIndex::build(&file, &fmt);
+            for l in 0..file.line_count() {
+                assert_eq!(idx.code(l), alone.code(l), "chunk {chunk_size} line {l}");
+            }
+            assert_eq!(idx.chunk_spans(), alone.chunk_spans());
+
+            let r = summarize(&file, &fmt);
+            assert!(!s.pending && !r.pending);
+            assert_eq!(s.total_lines, r.total_lines);
+            assert_eq!(s.line_count, r.line_count);
+            assert_eq!(s.levels, r.levels);
+            assert_eq!(s.fields, r.fields);
+            assert_eq!(s.start_timestamp, r.start_timestamp);
+            assert_eq!(s.stop_timestamp, r.stop_timestamp);
+            assert_eq!(s.start_ms, r.start_ms);
+
+            // the unfiltered view read from the index = an unfiltered scan (stack trace
+            // lines are not in the format and left out)
+            let empty = CompiledFilter::new(LineFilter::default(), fmt.clone());
+            let scanned = scan_matches(&file, &empty, &AtomicBool::new(false)).unwrap();
+            assert_eq!(idx.format_ranges(), scanned.ranges(), "chunk {chunk_size}");
+        }
+    }
+
+    #[test]
+    fn head_scan_equals_the_whole_scan_up_to_its_end() {
+        let text = sample();
+        let fmt = legacy();
+        let file = LogFile::from_test_bytes(text.as_bytes(), 512);
+        let empty = CompiledFilter::new(LineFilter::default(), fmt.clone());
+        let whole = scan_matches(&file, &empty, &AtomicBool::new(false)).unwrap();
+        for chunks in [1, 3, 10] {
+            let (head, end) = scan_head(&file, &empty, chunks);
+            let last = &file.chunks()[chunks - 1];
+            assert_eq!(end, last.first_line + last.line_count);
+            assert_eq!(head.line_count(), file.line_count());
+            let before = |m: &MatchSet| m.ranges().iter().filter(|r| r.0 < end).map(|r| (r.0, r.1.min(end))).collect::<Vec<_>>();
+            assert_eq!(before(&head), before(&whole), "{chunks} chunks");
+            assert!(head.ranges().iter().all(|r| r.1 <= end));
+        }
+        // more chunks than the file has: the whole result
+        let (head, end) = scan_head(&file, &empty, usize::MAX);
+        assert_eq!(end, file.line_count());
+        assert_eq!(head.ranges(), whole.ranges());
+    }
+
+    #[test]
+    fn pending_summary_is_the_first_chunks() {
+        let text = sample();
+        let file = LogFile::from_test_bytes(text.as_bytes(), 256);
+        let s = pending_summary(&file, &legacy());
+        assert!(s.pending);
+        assert_eq!(s.line_count, file.line_count());
+        // counted over the first chunk only
+        let first = &file.chunks()[0];
+        assert!(s.total_lines > 0 && s.total_lines as u64 <= first.line_count);
+        assert_eq!(s.fields.len(), 1);
+        assert_eq!(s.fields[0].name, "domain");
+        assert_eq!(s.fields[0].values, ["core", "net", "ui"]);
+        assert_eq!(s.start_timestamp.as_deref(), Some("2025-01-01 00:00:00"));
+        assert_eq!(s.stop_timestamp, None);
+        assert_eq!(s.format.columns.len(), legacy().fields().len());
     }
 
     #[test]

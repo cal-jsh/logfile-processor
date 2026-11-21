@@ -165,6 +165,24 @@ export default function App() {
         setFilePath(null);
     };
 
+    // A file opens with a pending summary (its first 16 MB) while the whole file is
+    // indexed in the background; fetch the real one, which waits until it is counted.
+    const summaryPending = !!summary?.pending;
+    useEffect(() => {
+        if (!summaryPending || !baseUrl || !sessionId) return;
+        const ctrl = new AbortController();
+        fetch(`${baseUrl}/summary?session_id=${encodeURIComponent(sessionId)}`, { signal: ctrl.signal })
+            .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`${r.status}`))))
+            .then((s: LogSummary) => {
+                // still the same file (another one may have been opened meanwhile)
+                if (current.current.sessionId === sessionId) setSummary(s);
+            })
+            .catch((e) => {
+                if (e?.name !== "AbortError") console.error("Summary:", e);
+            });
+        return () => ctrl.abort();
+    }, [summaryPending, baseUrl, sessionId]);
+
     if (summary && sessionId && baseUrl) {
         return (
             <Dashboard

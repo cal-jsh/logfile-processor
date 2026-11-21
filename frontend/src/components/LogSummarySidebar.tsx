@@ -37,6 +37,7 @@ import CliHelpDialog from "./CliHelpDialog";
 import UpdateDialog from "./UpdateDialog";
 import { backgroundCheck, currentVersion, type Update } from "../lib/updater";
 import FormatDialog from "./FormatDialog";
+import { IndexingSweep } from "./IndexingSweep";
 
 interface Props {
   summary: LogSummary;
@@ -101,11 +102,11 @@ function baseName(p: string): string {
   return p.split(/[\\/]/).pop() || p;
 }
 
-function Stat({ label, value, title }: { label: string; value: string; title?: string }) {
+function Stat({ label, value, title, pending }: { label: string; value: string; title?: string; pending?: boolean }) {
   return (
     <div className="rounded-lg border bg-background px-2.5 py-1.5" title={title}>
       <div className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">{label}</div>
-      <div className="truncate font-mono text-sm font-semibold tabular-nums">{value}</div>
+      <div className={`truncate font-mono text-sm font-semibold tabular-nums ${pending ? "text-muted-foreground/60" : ""}`}>{value}</div>
     </div>
   );
 }
@@ -185,8 +186,11 @@ export default function LogSummarySidebar({
     };
   }, []);
   const { state: sidebarState } = useSidebar();
+  // Right after opening, the summary is that of the first 16 MB while the whole file is
+  // counted: its counts are not shown (placeholders keep the layout, so nothing jumps)
+  const pending = !!summary.pending;
   const otherLines =
-    summary.line_count != null && summary.line_count !== summary.total_lines
+    !pending && summary.line_count != null && summary.line_count !== summary.total_lines
       ? summary.line_count - summary.total_lines
       : 0;
 
@@ -248,15 +252,21 @@ export default function LogSummarySidebar({
             <div className="grid grid-cols-2 gap-2">
               <Stat
                 label="Lines"
-                value={summary.total_lines.toLocaleString()}
+                value={pending ? "…" : summary.total_lines.toLocaleString()}
+                pending={pending}
                 title={
                   otherLines > 0
                     ? `${summary.line_count!.toLocaleString()} lines in the file, ${otherLines.toLocaleString()} not in the log format`
                     : undefined
                 }
               />
-              <Stat label="Duration" value={dur ?? "–"} />
+              <Stat label="Duration" value={pending ? "…" : dur ?? "–"} pending={pending} />
             </div>
+            {pending && (
+              <div className="text-[11px] text-muted-foreground" role="status">
+                Indexing {summary.line_count.toLocaleString()} lines…
+              </div>
+            )}
             {otherLines > 0 && (
               <div className="text-[11px] text-muted-foreground">
                 +{otherLines.toLocaleString()} lines not in the log format
@@ -273,6 +283,12 @@ export default function LogSummarySidebar({
                     </span>
                   </>
                 )}
+                {pending && (
+                  <>
+                    <span className="text-muted-foreground">To</span>
+                    <span className="font-mono text-muted-foreground/60">…</span>
+                  </>
+                )}
                 {summary.stop_timestamp && (
                   <>
                     <span className="text-muted-foreground">To</span>
@@ -284,8 +300,13 @@ export default function LogSummarySidebar({
               </div>
             )}
 
-            {/* Level distribution */}
-            {levelTotal > 0 && (
+            {/* Level distribution (a neutral bar with a sweep while it is counted) */}
+            {pending && (
+              <div className="relative mt-1 h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                <IndexingSweep tone="dark" />
+              </div>
+            )}
+            {!pending && levelTotal > 0 && (
               <div className="mt-1 flex h-1.5 w-full overflow-hidden rounded-full bg-muted">
                 {levelCounts.map(({ level, count }) =>
                   count > 0 ? (
@@ -303,9 +324,11 @@ export default function LogSummarySidebar({
                 <div key={level} className="flex items-center gap-2 py-0.5 text-xs">
                   <span className="size-2 shrink-0 rounded-full" style={{ background: colorMap[level] }} />
                   <span className="w-16 font-medium">{level}</span>
-                  <span className="ml-auto font-mono tabular-nums">{count.toLocaleString()}</span>
+                  <span className={`ml-auto font-mono tabular-nums ${pending ? "text-muted-foreground/60" : ""}`}>
+                    {pending ? "–" : count.toLocaleString()}
+                  </span>
                   <span className="w-10 text-right font-mono tabular-nums text-muted-foreground">
-                    {levelTotal > 0 ? `${Math.round((count / levelTotal) * 100)}%` : ""}
+                    {!pending && levelTotal > 0 ? `${Math.round((count / levelTotal) * 100)}%` : ""}
                   </span>
                 </div>
               ))}
