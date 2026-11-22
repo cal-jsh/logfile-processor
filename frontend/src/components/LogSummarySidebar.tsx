@@ -465,7 +465,7 @@ export default function LogSummarySidebar({
                 />
                 <div className="grid gap-0.5">
                   <span className="text-sm leading-none font-medium">Show {lanesField === "thread" ? "thread" : laneOptions.find((o) => o.value === lanesField)?.label.toLowerCase() ?? ""} lanes</span>
-                  <span className="text-xs text-muted-foreground">One lane per {lanesField === "thread" ? "thread" : laneOptions.find((o) => o.value === lanesField)?.label.toLowerCase()} over time, Ctrl+wheel zooms</span>
+                  <span className="text-xs text-muted-foreground">One lane per {lanesField === "thread" ? "thread" : laneOptions.find((o) => o.value === lanesField)?.label.toLowerCase()} over time; W/S zoom, A/D pan (or Ctrl+wheel)</span>
                 </div>
               </label>
             )}
