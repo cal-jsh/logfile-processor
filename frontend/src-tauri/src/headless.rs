@@ -4,7 +4,7 @@
 //! output is the same as exporting that filter from the viewer.
 
 use crate::cli::{check_file, FilterArgs};
-use logfile_processor::api::view::filter_file;
+use logfile_processor::api::view::{filter_file, ExportFormat, ExportOptions};
 use logfile_processor::choose_format;
 use logfile_processor::logfile::index::LogFile;
 use logfile_processor::parsing::format::{FieldKind, LogFormat};
@@ -48,17 +48,29 @@ fn filter(args: &FilterArgs) -> Result<(), Fail> {
     let format = Arc::new(chosen.format);
     let line_filter = build_filter(args, &format).map_err(|e| Fail(2, e))?;
 
-    let csv = args.csv();
+    let kind = args.export_format();
+    let mut opts = ExportOptions::new(kind);
+    opts.track_field = args.tracks.clone();
+    if let Some(n) = args.max_events {
+        opts.max_events = n;
+    }
+    if let Some(name) = path.file_name() {
+        opts.title = name.to_string_lossy().into_owned();
+    }
+    if kind == ExportFormat::Perfetto {
+        // a misspelt --tracks field is an option error, before anything is written
+        logfile_processor::api::perfetto::track_field(&format, opts.track_field.as_deref()).map_err(|e| Fail(2, e))?;
+    }
     let result = match &out_path {
         None => {
             // big buffer: stdout alone flushes every line
             let mut out = BufWriter::with_capacity(1 << 20, std::io::stdout().lock());
-            filter_file(&file, format.clone(), line_filter, args.context, csv, &mut out)
+            filter_file(&file, format.clone(), line_filter, args.context, &opts, &mut out)
         }
         Some(o) => {
             let f = std::fs::File::create(o).map_err(|e| Fail(1, format!("Cannot write {}: {e}", o.display())))?;
             let mut out = BufWriter::with_capacity(1 << 20, f);
-            filter_file(&file, format.clone(), line_filter, args.context, csv, &mut out)
+            filter_file(&file, format.clone(), line_filter, args.context, &opts, &mut out)
                 .and_then(|s| out.flush().map(|_| s))
         }
     };
@@ -72,16 +84,43 @@ fn filter(args: &FilterArgs) -> Result<(), Fail> {
         }
     };
 
-    if let Some(o) = &out_path {
-        let mut summary = format!(
-            "{} of {} lines matched, {} rows written to {} ({}) in {:.2} s",
-            stats.match_count,
-            stats.line_count,
-            stats.row_count,
-            o.display(),
-            if csv { "CSV" } else { "text" },
-            started.elapsed().as_secs_f64()
+    if stats.extra.truncated {
+        // also when writing to the terminal: the trace is not the whole selection
+        eprintln!(
+            "warning: stopped at {} events (--max-events); the trace ends at line {} of {}. \
+             Narrow the filter for the rest",
+            opts.max_events,
+            stats.row_count.min(stats.line_count),
+            stats.line_count
         );
+    }
+    if let Some(o) = &out_path {
+        let mut summary = match stats.extra.events {
+            Some(events) if stats.extra.truncated => format!(
+                "{events} events written to {} ({}) in {:.2} s",
+                o.display(),
+                kind.label(),
+                started.elapsed().as_secs_f64()
+            ),
+            Some(events) => format!(
+                "{} of {} lines matched, {} rows written to {} ({}, {events} events) in {:.2} s",
+                stats.match_count,
+                stats.line_count,
+                stats.row_count,
+                o.display(),
+                kind.label(),
+                started.elapsed().as_secs_f64()
+            ),
+            None => format!(
+                "{} of {} lines matched, {} rows written to {} ({}) in {:.2} s",
+                stats.match_count,
+                stats.line_count,
+                stats.row_count,
+                o.display(),
+                kind.label(),
+                started.elapsed().as_secs_f64()
+            ),
+        };
         if chosen.detected {
             summary.push_str(&format!("\nLine format (detected): {}", format.pattern()));
         }
@@ -240,6 +279,29 @@ mod tests {
         assert_eq!(run(&f), 0);
         let csv = std::fs::read_to_string(&out).unwrap();
         assert!(csv.starts_with("Line,Time,Level,Domain,Thread,Matched,Context,Message\n5,"), "{csv}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn writes_a_perfetto_trace_by_extension() {
+        let dir = std::env::temp_dir().join(format!("lp-perfetto-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("a.log");
+        std::fs::write(&log, LOG).unwrap();
+        let out = dir.join("a.perfetto.json");
+        let args = [log.to_str().unwrap(), "-l", "error", "-o", out.to_str().unwrap()];
+        let Ok(Cli::Filter(f)) = parse(args.iter().map(Into::into)) else { panic!() };
+        assert_eq!(run(&f), 0);
+        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+        let ev = v["traceEvents"].as_array().unwrap();
+        assert_eq!(ev[0]["args"]["name"], "a.log");
+        let inst: Vec<_> = ev.iter().filter(|e| e["ph"] == "i").collect();
+        assert_eq!(inst.len(), 2);
+        assert!(inst.iter().all(|e| e["cat"] == "error"));
+        // a field that is not there is an option error
+        let args = [log.to_str().unwrap(), "--perfetto", "--tracks", "process", "-o", out.to_str().unwrap()];
+        let Ok(Cli::Filter(f)) = parse(args.iter().map(Into::into)) else { panic!() };
+        assert_eq!(run(&f), 2);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
