@@ -200,7 +200,8 @@ mod tests {
 
     #[test]
     fn names() {
-        let p = Path::new(r"C:\logs\mylog.log");
+        // `/` separates folders on every platform (`\` only on Windows)
+        let p = Path::new("logs/mylog.log");
         assert_eq!(cut_file_name(p, ns("2026-11-20 01:30:00"), ns("2026-11-20 02:40:00")), "mylog_2026-11-20_0130-0240.log");
         assert_eq!(cut_file_name(p, ns("2026-11-20 01:30:12"), ns("2026-11-20 02:41:00.5")), "mylog_2026-11-20_0130-0241.log");
         assert_eq!(
