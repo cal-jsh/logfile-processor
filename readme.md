@@ -24,6 +24,10 @@ _A 5 GB, 52 million line log: rows on screen in under a second, filters in a fra
   to jump.
 - **Thread lanes.** One lane per thread (or domain) over time, coloured by level.
   W/S or Ctrl+wheel zoom at the pointer, A/D pan, click to jump to the line.
+- **Bookmarks.** Ctrl+B (or a click left of the line number) marks a line, F2 / Shift+F2
+  walk the marks, and each one can carry a short note. They show on the minimap and
+  the thread lanes, stay when a filter hides their line (listed greyed in the
+  Bookmarks panel), are kept per file, and export to a small text file to share.
 - **Export.** The current view as text or CSV.
 - **Light and dark.** Follows the Windows setting, or pick Light or Dark in Settings
   (sidebar footer, Ctrl+,). The window comes back where you left it (size, position, maximized),
@@ -41,9 +45,12 @@ Both remember whether you left them open.
 
 | Keys | Action |
 | --- | --- |
-| Ctrl+→ / Ctrl+← | Show / hide the sidebar (also the toggle at its top, or Ctrl+B) |
+| Ctrl+→ / Ctrl+← | Show / hide the sidebar (also the toggle at its top) |
 | Ctrl+↓ / Ctrl+↑ | Show / hide the filter panel (also the Filter button in the status bar) |
 | Ctrl+F / Ctrl+G | Search in the view / go to line |
+| Ctrl+B | Bookmark the current line (the one clicked or gone to, else the top row); again to remove it |
+| F2 / Shift+F2 | Go to the next / previous bookmark (wraps around; skips lines the filter hides) |
+| Ctrl+Shift+B | Show / hide the Bookmarks panel |
 | W / S | Zoom the thread lanes in / out at the pointer (hold for a smooth zoom; also Ctrl+wheel) |
 | A / D | Pan the zoomed thread lanes left / right (hold to keep going; also Shift+wheel or Shift+drag) |
 | Ctrl+, | Settings (theme, log format) |
@@ -53,6 +60,32 @@ W/A/S/D act while the pointer is over the thread lanes, as in Perfetto. With
 The shortcuts are ignored while typing in a text field, where Ctrl+arrows move
 the cursor by word. Filters stay applied while the panel is hidden; the status bar
 shows them and has a button to clear them.
+
+### Bookmarks
+
+Bookmarks are kept per file (by path, with its size and modification time). If the
+file has changed when you open it again, each bookmark is checked against its line:
+a log that only grew keeps them all, and bookmarks whose line is now different are
+flagged (dashed mark) instead of pointing at the wrong line.
+
+Export in the Bookmarks panel writes `<log name>.bookmarks.txt` next to the log:
+
+```text
+# Logfile Processor bookmarks, format 1
+# File: realistic_5G.log
+# Size: 5368709120 bytes, modified 2026-11-20 10:11:12 UTC
+# Exported: 2026-11-22 15:04:00 UTC
+
+line 48213 | 2026-11-18 14:05:30.123 | Pool exhausted here, retries start
+> [2026-11-18 14:05:30.123] [ERROR] [db.pool] [worker-3] Connection pool exhausted
+
+line 51002 | -
+>     at com.example.Pool.acquire(Pool.java:88)
+```
+
+Each bookmark is `line <number> | <log time> | <note>`, then the line itself after
+`> `. Import needs only the line number; the copied line is used to check that the
+file you import into has the same line there (bookmarks that don't match are flagged).
 
 ## Install
 

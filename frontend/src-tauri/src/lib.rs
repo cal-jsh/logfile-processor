@@ -152,6 +152,95 @@ async fn reveal_path(path: String) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// Size and last modification of a file, which bookmarks are kept with: when either
+/// changes, the log was rewritten (or grew) and the bookmarks are checked against it.
+#[derive(Serialize)]
+struct FileStamp {
+    size: u64,
+    /// ms since 1970 (UTC), `None` where the file system does not keep it
+    modified_ms: Option<f64>,
+}
+
+#[tauri::command]
+async fn file_stamp(path: String) -> Result<FileStamp, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;
+        let modified_ms = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as f64);
+        Ok(FileStamp { size: meta.len(), modified_ms })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Text files the UI writes and reads itself (bookmark exports) are at most this big.
+const MAX_TEXT_FILE: u64 = 16 * 1024 * 1024;
+
+/// Save `contents` as a text file through a native Save dialog that starts in `dir`
+/// with `file_name`. Returns the path written, `None` if cancelled.
+#[tauri::command]
+async fn save_text_file(
+    app: tauri::AppHandle,
+    title: String,
+    dir: Option<String>,
+    file_name: String,
+    contents: String,
+) -> Result<Option<String>, String> {
+    let picked = tauri::async_runtime::spawn_blocking(move || {
+        let mut d = app.dialog().file().set_title(title).set_file_name(file_name);
+        if let Some(dir) = dir.filter(|d| std::path::Path::new(d).is_dir()) {
+            d = d.set_directory(dir);
+        }
+        d.add_filter("Text", &["txt"]).add_filter("All files", &["*"]).blocking_save_file()
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    let Some(picked) = picked else { return Ok(None) };
+    let path = picked.into_path().map_err(|e| e.to_string())?;
+    let written = path.clone();
+    tauri::async_runtime::spawn_blocking(move || std::fs::write(&written, contents))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| format!("Could not write {}: {e}", path.display()))?;
+    Ok(Some(path.to_string_lossy().into_owned()))
+}
+
+/// A text file picked in a native Open dialog that starts in `dir`.
+#[derive(Serialize)]
+struct PickedText {
+    path: String,
+    contents: String,
+}
+
+/// Pick a text file and read it (UTF-8, invalid bytes replaced). `None` if cancelled.
+#[tauri::command]
+async fn open_text_file(app: tauri::AppHandle, title: String, dir: Option<String>) -> Result<Option<PickedText>, String> {
+    let picked = tauri::async_runtime::spawn_blocking(move || {
+        let mut d = app.dialog().file().set_title(title);
+        if let Some(dir) = dir.filter(|d| std::path::Path::new(d).is_dir()) {
+            d = d.set_directory(dir);
+        }
+        d.add_filter("Text", &["txt"]).add_filter("All files", &["*"]).blocking_pick_file()
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    let Some(picked) = picked else { return Ok(None) };
+    let path = picked.into_path().map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let len = std::fs::metadata(&path).map_err(|e| e.to_string())?.len();
+        if len > MAX_TEXT_FILE {
+            return Err(format!("{} is too big for a bookmarks file ({} MB)", path.display(), len / (1024 * 1024)));
+        }
+        let bytes = std::fs::read(&path).map_err(|e| format!("Could not read {}: {e}", path.display()))?;
+        Ok(Some(PickedText { path: path.to_string_lossy().into_owned(), contents: String::from_utf8_lossy(&bytes).into_owned() }))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// The file from the command line (or dropped onto the exe icon), already checked:
 /// a path to open, or the message saying why it cannot be opened.
 struct InitialFile(Mutex<Option<Result<String, String>>>);
@@ -427,6 +516,9 @@ fn run_with(initial: Option<Result<String, String>>) {
             cut_time_range,
             reveal_path,
             files_exist,
+            file_stamp,
+            save_text_file,
+            open_text_file,
             initial_file,
             cli_help
         ])

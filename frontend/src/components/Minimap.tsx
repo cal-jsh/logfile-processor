@@ -28,6 +28,8 @@ import { END_W, LABEL_W } from "./plotColumns";
  * backend gives the 12 largest groups a code each and folds the rest into "other". A
  * legend below the bar names the colours.
  *
+ * Bookmarks are ticks across the bar (hollow when the filter hides their line).
+ *
  * Zoomed thread lanes: their time window is marked on the time axis (a dashed box on the
  * bar, a bracket on the scale), so the lanes' place in the file stays visible.
  *
@@ -76,6 +78,18 @@ type MinimapData = {
   first_lines: number[] | null;
   time_start_ms: number | null;
   time_end_ms: number | null;
+};
+
+/** A bookmark, as the minimap and the thread lanes draw it */
+export type OverviewMark = {
+  /** 1-based file line */
+  line: number;
+  /** ms, log clock; null without a timestamp (then not on a time axis) */
+  t: number | null;
+  /** Its line's text fields, by name (the lanes find its lane by them) */
+  fields: Record<string, string>;
+  /** The current filter hides the line: drawn hollow */
+  hidden: boolean;
 };
 
 /** What is on screen: 1-based file lines, and their times (ms, log clock) if known */
@@ -179,6 +193,7 @@ export function Minimap({
   onTimeRangeChange,
   lanesWindow,
   rangeAction,
+  marks,
 }: {
   baseUrl: string;
   sessionId: string;
@@ -196,6 +211,8 @@ export function Minimap({
   lanesWindow?: TimeRange | null;
   /** Shown in the name column of the time scale while a time range is set (Cut to file) */
   rangeAction?: React.ReactNode;
+  /** Bookmarks, drawn as ticks */
+  marks?: OverviewMark[];
 }) {
   const barRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -408,6 +425,15 @@ export function Minimap({
 
   const ticks = timeAxis ? timeTicks(t0, t1, cssWidth) : [];
 
+  // bookmarks: x in css px (by time, only those with a timestamp)
+  const markXs: { x: number; hidden: boolean; key: number }[] = [];
+  if (data && cssWidth && marks?.length) {
+    for (const m of marks) {
+      const f = timeAxis ? (m.t != null && t1 > t0 ? (m.t - t0) / (t1 - t0) : null) : lineCount ? (m.line - 0.5) / lineCount : null;
+      if (f != null && f >= 0 && f <= 1) markXs.push({ x: f * cssWidth, hidden: m.hidden, key: m.line });
+    }
+  }
+
   return (
     <div className="shrink-0 select-none border-b border-log-ink/10 bg-log-panel">
       {/* time scale */}
@@ -506,6 +532,15 @@ export function Minimap({
               style={{ left: box.left, width: box.width }}
             />
           )}
+
+          {markXs.map((m) => (
+            <div
+              key={m.key}
+              className={`pointer-events-none absolute inset-y-0 z-[7] w-[3px] -translate-x-1/2 ${m.hidden ? "bookmark-tick-hidden" : "bookmark-tick"}`}
+              style={{ left: m.x }}
+              aria-hidden
+            />
+          ))}
 
           {hover && (
             <>

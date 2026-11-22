@@ -15,6 +15,7 @@ import { RegexToggle } from "../components/RegexToggle";
 import { useTheme } from "../lib/theme";
 import { isTypingTarget } from "../lib/keys";
 import { CutChipButton, CutNote, CutScaleButton, useCutRange, type CutState } from "../components/CutRange";
+import { useBookmarks } from "../components/Bookmarks";
 
 interface DashboardProps {
     sessionId: string;
@@ -210,6 +211,9 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
         }
     };
     const [searchOpen, setSearchOpen] = useState(false); // floating search panel
+    // bookmarks of this file (kept per file) and their floating panel
+    const bookmarks = useBookmarks({ path: fileName, baseUrl, sessionId, columns: summary.format.columns });
+    const [bookmarksOpen, setBookmarksOpen] = useState(false);
 
     // The sidebar and the filter panel start hidden so the log gets the space; the
     // choice is remembered. Ctrl+Right/Left show/hide the sidebar, Ctrl+Down/Up the filters.
@@ -354,6 +358,9 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
                 onOpenAnother={onClose}
                 searchOpen={searchOpen}
                 onToggleSearch={() => setSearchOpen((o) => !o)}
+                bookmarksOpen={bookmarksOpen}
+                onToggleBookmarks={() => setBookmarksOpen((o) => !o)}
+                bookmarkCount={bookmarks.list.length}
                 showDelta={showDelta}
                 setShowDelta={setShowDelta}
                 showMinimap={showMinimap}
@@ -575,6 +582,9 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
                             trackField={lanesFieldDef}
                             searchOpen={searchOpen}
                             onSearchOpenChange={setSearchOpen}
+                            bookmarks={bookmarks}
+                            bookmarksOpen={bookmarksOpen}
+                            onBookmarksOpenChange={setBookmarksOpen}
                             timeSpan={timeSpan}
                             timeRange={timeRange}
                             onTimeRangeChange={setTimeRange}

@@ -8,6 +8,8 @@
 //! * `GET /view/matches` returns the match line numbers themselves.
 //! * `GET /summary` returns the file's summary once it is counted (opening a file
 //!   returns a pending one, see `LogSummary::pending`).
+//! * `GET /view/lines_at` reads given file lines and says where each is in the view
+//!   (bookmarks: their marks, and whether the filter hides them).
 //! * `GET /view/row_of_line`, `/view/row_of_time` and `/view/search` support jumping
 //!   and searching inside the results. Exporting them to a file is `export_view_to_file`, called by the
 //!   desktop app.
@@ -53,6 +55,7 @@ pub fn router() -> Router {
         .route("/view/matches", get(get_view_matches))
         .route("/view/row_of_line", get(get_row_of_line))
         .route("/view/row_of_time", get(get_row_of_time))
+        .route("/view/lines_at", get(get_lines_at))
         .route("/view/search", get(search_view))
         .route("/regex/check", get(check_regex))
         .route("/close_session", post(close_session))
@@ -85,6 +88,8 @@ pub struct ViewQuery {
     pub limit: Option<u64>,
     /// 1-based line number
     pub line: Option<u64>,
+    /// `/view/lines_at`: comma-separated 1-based line numbers
+    pub lines: Option<String>,
     /// Search text (case-insensitive)
     pub q: Option<String>,
     /// `q` is a regular expression (Rust `regex` syntax)
@@ -496,6 +501,77 @@ pub async fn get_row_of_line(Query(q): Query<ViewQuery>) -> Result<Json<RowOfLin
     let r = resolve(&q).await?;
     let line = q.line.unwrap_or(1).max(1) - 1;
     Ok(Json(RowOfLineResponse { row: r.view.row_of_line(line), row_count: r.view.row_count() }))
+}
+
+// ---------------------------------------------------------------- /view/lines_at
+
+#[derive(Serialize)]
+pub struct LineAt {
+    pub line_number: u64,
+    pub text: String,
+    /// As in [`Row::fields`]
+    pub fields: Option<Vec<String>>,
+    /// As in [`Row::t`]
+    pub t: Option<f64>,
+    pub truncated: bool,
+    /// The row showing this line, `null` when the view's filter hides it
+    pub row: Option<u64>,
+    /// First row showing this line or a later one (`row_count` if none)
+    pub next_row: u64,
+}
+
+#[derive(Serialize)]
+pub struct LinesAtResponse {
+    pub line_count: u64,
+    pub row_count: u64,
+    /// The lines asked for that are in the file, in the order asked
+    pub lines: Vec<LineAt>,
+}
+
+/// Given file lines (`lines`, 1-based, comma-separated, at most 5000) with their text and
+/// their place in the view: the row that shows each one, or none if the filter hides it.
+/// For bookmarks, which stay on their lines whatever the filter; lines past the end of
+/// the file (a log that was rewritten shorter) are left out.
+pub async fn get_lines_at(Query(q): Query<ViewQuery>) -> Result<Json<LinesAtResponse>, ApiError> {
+    let wanted = parse_line_list(q.lines.as_deref().unwrap_or(""))?;
+    let r = resolve(&q).await?;
+    let row_count = r.view.row_count();
+    let line_count = r.session.file.line_count();
+    let lines = blocking(move || {
+        let (file, format, view) = (&r.session.file, &r.session.format, &r.view);
+        wanted
+            .into_iter()
+            .filter(|&l| l < line_count)
+            .filter_map(|l| {
+                let (_, bytes) = file.lines_from(l).next()?;
+                let (text, truncated) = display_text(bytes, MAX_DISPLAY_BYTES);
+                let (fields, t) = split_for_display(format, &text);
+                let next_row = view.row_of_line(l);
+                let row = (view.line_of_row(next_row) == Some(l)).then_some(next_row);
+                Some(LineAt { line_number: l + 1, text, fields, t, truncated, row, next_row })
+            })
+            .collect()
+    })
+    .await?;
+    Ok(Json(LinesAtResponse { line_count, row_count, lines }))
+}
+
+/// "12,7,300" as 0-based line numbers.
+fn parse_line_list(s: &str) -> Result<Vec<u64>, ApiError> {
+    let bad = |m: String| ApiError(StatusCode::BAD_REQUEST, m);
+    let out = s
+        .split(',')
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(|p| match p.parse::<u64>() {
+            Ok(n) if n >= 1 => Ok(n - 1),
+            _ => Err(bad(format!("Not a line number: {p}"))),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if out.len() as u64 > MAX_ROWS_PER_REQUEST {
+        return Err(bad(format!("At most {MAX_ROWS_PER_REQUEST} lines per request")));
+    }
+    Ok(out)
 }
 
 // ---------------------------------------------------------------- /view/row_of_time
@@ -1097,6 +1173,33 @@ mod tests {
         let rows = get_view_rows(Query(q)).await.ok().unwrap().0;
         assert_eq!(rows.rows[0].line_number, 2501);
         assert!(session.cached_matches(&LineFilter::default()).is_some());
+        remove_user_log(&id);
+    }
+
+    /// Bookmarked lines: their text, and their row or none when the filter hides them.
+    #[tokio::test]
+    async fn lines_at_gives_rows_and_hidden_lines() {
+        let mut text = String::new();
+        for i in 0..200 {
+            let level = if i % 10 == 0 { "ERROR" } else { "INFO" };
+            text.push_str(&format!("[2025-01-01 00:00:00] [{level}] [core] line {i}\n"));
+        }
+        let fmt = Arc::new(LogFormat::compile(LEGACY_PATTERN).unwrap());
+        let file = Arc::new(LogFile::from_test_bytes(text.as_bytes(), 4096));
+        let id = uuid::Uuid::new_v4().to_string();
+        save_user_log(&id, Session::new("test.log".into(), file, fmt, FormatChoice::default()));
+        // lines 11 (ERROR, row 1), 12 (INFO, hidden) and 999 (past the end, left out)
+        let r = get_lines_at(Query(query(&format!("session_id={id}&levels=ERROR&lines=11,12,999")))).await.ok().unwrap().0;
+        assert_eq!(r.row_count, 20);
+        assert_eq!(r.lines.len(), 2);
+        assert_eq!((r.lines[0].line_number, r.lines[0].row, r.lines[0].next_row), (11, Some(1), 1));
+        assert!(r.lines[0].text.ends_with("line 10"));
+        assert_eq!(r.lines[0].fields.as_ref().unwrap()[1], "ERROR");
+        assert_eq!((r.lines[1].line_number, r.lines[1].row, r.lines[1].next_row), (12, None, 2));
+        // with one line of context the hidden line is a row again
+        let r = get_lines_at(Query(query(&format!("session_id={id}&levels=ERROR&context=1&lines=12")))).await.ok().unwrap().0;
+        assert!(r.lines[0].row.is_some());
+        assert!(get_lines_at(Query(query(&format!("session_id={id}&lines=0")))).await.is_err());
         remove_user_log(&id);
     }
 
