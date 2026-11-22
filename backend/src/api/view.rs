@@ -688,29 +688,109 @@ fn today() -> String {
     format!("{y:04}-{m:02}-{d:02}")
 }
 
-/// Writes lines of a log file as the export does: the original lines as text, or CSV
+/// File format of an export.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ExportFormat {
+    /// The original lines
+    #[default]
+    Text,
+    /// See [`RowWriter`]
+    Csv,
+    /// A Perfetto trace, see [`super::perfetto`]
+    Perfetto,
+}
+
+impl ExportFormat {
+    /// `txt`/`text`, `csv` or `perfetto`, any case.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "txt" | "text" => Some(Self::Text),
+            "csv" => Some(Self::Csv),
+            "perfetto" => Some(Self::Perfetto),
+            _ => None,
+        }
+    }
+
+    /// Name of the default export file after `logs_<date>`.
+    pub fn extension(self) -> &'static str {
+        match self {
+            Self::Text => "txt",
+            Self::Csv => "csv",
+            Self::Perfetto => "perfetto.json",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::Csv => "CSV",
+            Self::Perfetto => "Perfetto trace",
+        }
+    }
+}
+
+/// How to write an export.
+#[derive(Clone, Debug)]
+pub struct ExportOptions {
+    pub format: ExportFormat,
+    /// Perfetto: the field whose values become tracks (name or label); `None`: thread,
+    /// else the first text field
+    pub track_field: Option<String>,
+    /// Perfetto: events written at most
+    pub max_events: u64,
+    /// Perfetto: the process name shown, usually the log's file name
+    pub title: String,
+}
+
+impl ExportOptions {
+    pub fn new(format: ExportFormat) -> Self {
+        Self { format, track_field: None, max_events: super::perfetto::DEFAULT_MAX_EVENTS, title: "log".into() }
+    }
+}
+
+/// What an export wrote, past the rows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct ExportExtra {
+    /// Perfetto: events written (lines without a time join the event before them)
+    pub events: Option<u64>,
+    /// Perfetto: stopped at the event limit, the later rows are not in the file
+    pub truncated: bool,
+}
+
+/// Writes lines of a log file as the export does: the original lines as text, CSV
 /// with `Line`, one column per field of the format except the message, `Matched`,
 /// `Context`, then `Message`: the whole line, as before (stack traces and other lines
-/// without the format have empty field columns).
+/// without the format have empty field columns), or Perfetto trace events.
 struct RowWriter<'a> {
     file: &'a LogFile,
     format: &'a LogFormat,
     /// The field columns (all but the message)
     columns: Vec<usize>,
-    csv: bool,
+    kind: ExportFormat,
+    perfetto: Option<super::perfetto::PerfettoWriter<'a>>,
     buf: Vec<u8>,
     /// Where the last read ended, so reading on from there needs no seek
     known: Option<(u64, usize)>,
 }
 
 impl<'a> RowWriter<'a> {
-    fn new(file: &'a LogFile, format: &'a LogFormat, csv: bool) -> Self {
+    fn new(file: &'a LogFile, format: &'a LogFormat, opts: &ExportOptions) -> Result<Self, String> {
         let columns = (0..format.fields().len()).filter(|&i| Some(i) != format.message_field()).collect();
-        Self { file, format, columns, csv, buf: Vec::with_capacity(MAX_DISPLAY_BYTES), known: None }
+        let perfetto = match opts.format {
+            ExportFormat::Perfetto => {
+                let track = super::perfetto::track_field(format, opts.track_field.as_deref())?;
+                Some(super::perfetto::PerfettoWriter::new(format, &opts.title, track, opts.max_events))
+            }
+            _ => None,
+        };
+        Ok(Self { file, format, columns, kind: opts.format, perfetto, buf: Vec::with_capacity(MAX_DISPLAY_BYTES), known: None })
     }
 
     fn header(&mut self, out: &mut impl std::io::Write) -> std::io::Result<()> {
-        if !self.csv {
+        if let Some(p) = &mut self.perfetto {
+            return p.header(out);
+        }
+        if self.kind != ExportFormat::Csv {
             return Ok(());
         }
         self.buf.clear();
@@ -723,59 +803,101 @@ impl<'a> RowWriter<'a> {
         out.write_all(&self.buf)
     }
 
+    /// No more rows will be written (the Perfetto event limit).
+    fn full(&self) -> bool {
+        self.perfetto.as_ref().is_some_and(|p| p.full())
+    }
+
     /// One row: 0-based `line` with its bytes (without the line break).
     fn row(&mut self, out: &mut impl std::io::Write, line: u64, bytes: &[u8], is_match: bool) -> std::io::Result<()> {
-        if self.csv {
-            let buf = &mut self.buf;
-            buf.clear();
-            let text = String::from_utf8_lossy(bytes);
-            let parsed = self.format.parse(&text);
-            buf.extend_from_slice((line + 1).to_string().as_bytes());
-            for &i in &self.columns {
-                buf.push(b',');
-                csv_field(buf, parsed.as_ref().map_or("", |p| p.get(&text, i)));
+        match self.kind {
+            ExportFormat::Perfetto => self.perfetto.as_mut().unwrap().row(out, line, bytes, is_match),
+            ExportFormat::Csv => {
+                let buf = &mut self.buf;
+                buf.clear();
+                let text = String::from_utf8_lossy(bytes);
+                let parsed = self.format.parse(&text);
+                buf.extend_from_slice((line + 1).to_string().as_bytes());
+                for &i in &self.columns {
+                    buf.push(b',');
+                    csv_field(buf, parsed.as_ref().map_or("", |p| p.get(&text, i)));
+                }
+                buf.extend_from_slice(if is_match { b",true,false," } else { b",false,true," });
+                csv_field(buf, &text);
+                buf.push(b'\n');
+                out.write_all(buf)
             }
-            buf.extend_from_slice(if is_match { b",true,false," } else { b",false,true," });
-            csv_field(buf, &text);
-            buf.push(b'\n');
-            out.write_all(buf)
-        } else {
-            out.write_all(bytes)?;
-            out.write_all(b"\n")
+            ExportFormat::Text => {
+                out.write_all(bytes)?;
+                out.write_all(b"\n")
+            }
         }
     }
 
     /// Rows for the lines `first..end`, all matches or all context.
     fn lines(&mut self, out: &mut impl std::io::Write, first: u64, end: u64, is_match: bool) -> std::io::Result<()> {
-        if first >= end {
+        if first >= end || self.full() {
             return Ok(());
         }
         let file = self.file;
         let mut it = file.lines_from_hint(first, self.known);
         for (line, bytes) in it.by_ref().take((end - first) as usize) {
             self.row(out, line, bytes, is_match)?;
+            if self.full() {
+                break;
+            }
         }
         self.known = Some(it.cursor());
         Ok(())
     }
+
+    /// The end of the file (Perfetto: the open event and the closing brackets).
+    fn finish(&mut self, out: &mut impl std::io::Write) -> std::io::Result<ExportExtra> {
+        match &mut self.perfetto {
+            Some(p) => {
+                p.finish(out)?;
+                Ok(ExportExtra { events: Some(p.events), truncated: p.truncated })
+            }
+            None => Ok(ExportExtra::default()),
+        }
+    }
 }
 
-/// Write every row of the view as text (original lines) or CSV to `out`
-/// (columns: see [`RowWriter`]).
+fn invalid(e: String) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::InvalidInput, e)
+}
+
+/// Write every row of the view as text (original lines), CSV or a Perfetto trace to
+/// `out` (see [`RowWriter`]).
 pub fn write_view(
     file: &LogFile,
     format: &LogFormat,
     matches: &MatchSet,
     view: &View,
-    csv: bool,
+    opts: &ExportOptions,
     out: &mut impl std::io::Write,
-) -> std::io::Result<()> {
-    let mut w = RowWriter::new(file, format, csv);
+) -> std::io::Result<ExportExtra> {
+    let mut w = RowWriter::new(file, format, opts).map_err(invalid)?;
     w.header(out)?;
     for (_, l, bytes) in ViewLines::new(file, view, 0, view.row_count()) {
         w.row(out, l, bytes, matches.is_match(l))?;
+        if w.full() {
+            break;
+        }
     }
-    out.flush()
+    let extra = w.finish(out)?;
+    out.flush()?;
+    Ok(extra)
+}
+
+/// What [`export_view_to_file`] wrote.
+#[derive(Clone, Debug, Serialize)]
+pub struct ExportResult {
+    pub path: String,
+    /// Rows of the view (matches plus context lines)
+    pub rows: u64,
+    #[serde(flatten)]
+    pub extra: ExportExtra,
 }
 
 /// Export the view of an open session (filter + context) to a local file. `time` is the
@@ -789,10 +911,12 @@ pub async fn export_view_to_file(
     regex: Option<&str>,
     time: (Option<f64>, Option<f64>),
     context: u64,
-    csv: bool,
+    mut opts: ExportOptions,
     path: std::path::PathBuf,
-) -> Result<u64, String> {
+) -> Result<ExportResult, String> {
     let session = get_user_log(session_id).ok_or("Session ID not found")?;
+    // a bad track field fails before the file is created
+    super::perfetto::track_field(&session.format, opts.track_field.as_deref())?;
     let (matches, _) = session
         .matches(LineFilter::from_query(levels, fields, keywords, regex)?.with_time_ms(time.0, time.1)?)
         .await
@@ -802,45 +926,53 @@ pub async fn export_view_to_file(
         })?;
     let view = matches.view(context);
     let rows = view.row_count();
-    tokio::task::spawn_blocking(move || {
+    if let Some(name) = session.path.file_name() {
+        opts.title = name.to_string_lossy().into_owned();
+    }
+    let shown = path.to_string_lossy().into_owned();
+    let extra = tokio::task::spawn_blocking(move || {
         let f = std::fs::File::create(&path)?;
         let mut out = std::io::BufWriter::with_capacity(1024 * 1024, f);
-        write_view(&session.file, &session.format, &matches, &view, csv, &mut out)
+        write_view(&session.file, &session.format, &matches, &view, &opts, &mut out)
     })
     .await
     .map_err(|e| e.to_string())?
     .map_err(|e| e.to_string())?;
-    Ok(rows)
+    Ok(ExportResult { path: shown, rows, extra })
 }
 
 /// What [`filter_file`] wrote.
 pub struct FilterStats {
     pub line_count: u64,
+    /// Matches found (when `extra.truncated`: up to where it stopped)
     pub match_count: u64,
-    /// Rows written: matches plus context lines
+    /// Rows written: matches plus context lines (when `extra.truncated`: rows looked at)
     pub row_count: u64,
+    pub extra: ExportExtra,
 }
 
-/// Filter a file without a session (the command line) and write the rows as text or
-/// CSV to `out`, as they are found. Same filter and row writer as the viewer's export,
-/// and the same rows as its [`View`] with `context` lines (a test checks this), but
-/// nothing is collected: memory stays small however many lines match.
+/// Filter a file without a session (the command line) and write the rows as text, CSV
+/// or a Perfetto trace to `out`, as they are found. Same filter and row writer as the
+/// viewer's export, and the same rows as its [`View`] with `context` lines (a test
+/// checks this), but nothing is collected: memory stays small however many lines
+/// match. A Perfetto export stops scanning at its event limit.
 pub fn filter_file(
     file: &LogFile,
     format: Arc<LogFormat>,
     filter: LineFilter,
     context: u64,
-    csv: bool,
+    opts: &ExportOptions,
     out: &mut impl std::io::Write,
 ) -> std::io::Result<FilterStats> {
     let compiled = crate::logfile::scan::CompiledFilter::new(filter, format.clone());
     let line_count = file.line_count();
-    let mut w = RowWriter::new(file, &format, csv);
+    let mut w = RowWriter::new(file, &format, opts).map_err(invalid)?;
     w.header(out)?;
     let (mut match_count, mut row_count) = (0u64, 0u64);
     // `written`: first line not written yet; `tail`: end of the last match's context
     let (mut written, mut tail) = (0u64, 0u64);
-    crate::logfile::scan::scan_streaming(file, &compiled, |ranges| {
+    let mut stopped = false;
+    let scanned = crate::logfile::scan::scan_streaming(file, &compiled, |ranges| {
         for &(s, e) in ranges {
             // the rest of the previous match's trailing context
             let after = tail.min(s).max(written);
@@ -853,20 +985,30 @@ pub fn filter_file(
             match_count += e - s;
             written = e;
             tail = e.saturating_add(context).min(line_count);
+            if w.full() {
+                // no more rows are taken: stop the scan
+                stopped = true;
+                return Err(std::io::Error::other("event limit"));
+            }
         }
         Ok::<(), std::io::Error>(())
-    })?;
-    if tail > written {
+    });
+    match scanned {
+        Err(_) if stopped => {}
+        r => r?,
+    }
+    if tail > written && !stopped {
         w.lines(out, written, tail, false)?;
         row_count += tail - written;
     }
+    let extra = w.finish(out)?;
     out.flush()?;
-    Ok(FilterStats { line_count, match_count, row_count })
+    Ok(FilterStats { line_count, match_count, row_count, extra })
 }
 
-/// Default export file name, e.g. `logs_2026-11-19.csv`.
-pub fn export_file_name(csv: bool) -> String {
-    format!("logs_{}.{}", today(), if csv { "csv" } else { "txt" })
+/// Default export file name, e.g. `logs_2026-11-19.csv` or `logs_2026-11-19.perfetto.json`.
+pub fn export_file_name(format: ExportFormat) -> String {
+    format!("logs_{}.{}", today(), format.extension())
 }
 
 // ---------------------------------------------------------------- /close_session
@@ -1001,7 +1143,7 @@ mod tests {
             .unwrap_or_else(|_| panic!("cancelled"));
         let v = m.view(1);
         let mut out = Vec::new();
-        write_view(&file, &fmt, &m, &v, true, &mut out).unwrap();
+        write_view(&file, &fmt, &m, &v, &ExportOptions::new(ExportFormat::Csv), &mut out).unwrap();
         assert_eq!(
             String::from_utf8(out).unwrap(),
             "Line,Time,Thread,Level,Matched,Context,Message\n\
@@ -1030,16 +1172,18 @@ mod tests {
         let cases = [(Some("error"), None), (None, Some(r#"{"thread":["2"]}"#)), (Some("nope"), None), (None, None)];
         for (levels, fields) in cases {
             for context in [0, 1, 2, 5, 1000] {
-                for csv in [false, true] {
+                for kind in [ExportFormat::Text, ExportFormat::Csv, ExportFormat::Perfetto] {
+                    let opts = ExportOptions::new(kind);
                     let filter = LineFilter::from_query(levels, fields, None, None).unwrap();
                     let m = scan_matches(&file, &CompiledFilter::new(filter.clone(), fmt.clone()), &AtomicBool::new(false))
                         .unwrap_or_else(|_| panic!("cancelled"));
                     let v = m.view(context);
                     let mut expected = Vec::new();
-                    write_view(&file, &fmt, &m, &v, csv, &mut expected).unwrap();
+                    let extra = write_view(&file, &fmt, &m, &v, &opts, &mut expected).unwrap();
                     let mut got = Vec::new();
-                    let stats = filter_file(&file, fmt.clone(), filter, context, csv, &mut got).unwrap();
-                    assert!(expected == got, "{levels:?} {fields:?} context {context} csv {csv}");
+                    let stats = filter_file(&file, fmt.clone(), filter, context, &opts, &mut got).unwrap();
+                    assert!(expected == got, "{levels:?} {fields:?} context {context} {kind:?}");
+                    assert_eq!(extra, stats.extra);
                     assert_eq!((stats.match_count, stats.row_count), (m.match_count(), v.row_count()));
                 }
             }

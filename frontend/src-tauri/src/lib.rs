@@ -96,15 +96,16 @@ async fn export_view(
     time_to: Option<f64>,
     context: u64,
     format: String,
-) -> Result<Option<String>, String> {
-    let csv = format == "csv";
-    let name = view::export_file_name(csv);
+    track_field: Option<String>,
+) -> Result<Option<view::ExportResult>, String> {
+    let kind = view::ExportFormat::parse(&format).ok_or_else(|| format!("Unknown export format {format}"))?;
+    let name = view::export_file_name(kind);
     let picked = tauri::async_runtime::spawn_blocking(move || {
         let d = app.dialog().file().set_title("Export rows").set_file_name(name);
-        let d = if csv {
-            d.add_filter("CSV", &["csv"])
-        } else {
-            d.add_filter("Text", &["txt", "log"])
+        let d = match kind {
+            view::ExportFormat::Csv => d.add_filter("CSV", &["csv"]),
+            view::ExportFormat::Perfetto => d.add_filter("Perfetto trace (JSON)", &["json"]),
+            view::ExportFormat::Text => d.add_filter("Text", &["txt", "log"]),
         };
         d.blocking_save_file()
     })
@@ -112,7 +113,9 @@ async fn export_view(
     .map_err(|e| e.to_string())?;
     let Some(picked) = picked else { return Ok(None) };
     let path = picked.into_path().map_err(|e| e.to_string())?;
-    let rows = view::export_view_to_file(
+    let mut opts = view::ExportOptions::new(kind);
+    opts.track_field = track_field;
+    let result = view::export_view_to_file(
         &session_id,
         levels.as_deref(),
         fields.as_deref(),
@@ -120,12 +123,12 @@ async fn export_view(
         regex.as_deref(),
         (time_from, time_to),
         context,
-        csv,
+        opts,
         path.clone(),
     )
     .await?;
-    tracing::info!("Exported {} rows to {}", rows, path.display());
-    Ok(Some(path.to_string_lossy().into_owned()))
+    tracing::info!("Exported {} rows to {} ({})", result.rows, path.display(), kind.label());
+    Ok(Some(result))
 }
 
 /// Cut the time range `[time_from, time_to)` (ms, log clock) out of the session's log

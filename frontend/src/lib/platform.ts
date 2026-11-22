@@ -37,8 +37,25 @@ export async function reformatLog(sessionId: string, path: string, pattern: stri
   return { ...r, path };
 }
 
+export type ExportFormat = "txt" | "csv" | "perfetto";
+
+/** Perfetto exports stop after this many events (`perfetto::DEFAULT_MAX_EVENTS` in
+    the backend): the Perfetto UI loads JSON traces in browser memory. */
+export const PERFETTO_MAX_EVENTS = 4_000_000;
+
+/** What an export wrote. */
+export interface ExportResult {
+  path: string;
+  /** Rows of the view (matches plus context lines) */
+  rows: number;
+  /** Perfetto: events written (lines without a time join the one before) */
+  events: number | null;
+  /** Perfetto: stopped at PERFETTO_MAX_EVENTS */
+  truncated: boolean;
+}
+
 /** Export the current view through a native Save dialog.
-    Returns the saved path, or null if cancelled. */
+    Returns what was saved, or null if cancelled. */
 export function exportView(args: {
   sessionId: string;
   levels: string | null;
@@ -51,9 +68,11 @@ export function exportView(args: {
   timeFrom: number | null;
   timeTo: number | null;
   context: number;
-  format: "txt" | "csv";
-}): Promise<string | null> {
-  return invoke<string | null>("export_view", args);
+  format: ExportFormat;
+  /** Perfetto: field whose values become tracks (null: thread, else the first) */
+  trackField: string | null;
+}): Promise<ExportResult | null> {
+  return invoke<ExportResult | null>("export_view", args);
 }
 
 /** A file passed on the command line, if any. */

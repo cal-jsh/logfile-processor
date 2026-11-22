@@ -4,7 +4,8 @@ import { Button } from "./ui/button";
 import { levelColor } from "../lib/colorMap";
 import { Spinner } from "./ui/spinner";
 import { Download, LocateFixed, Search } from "lucide-react";
-import { exportView } from "../lib/platform";
+import { exportView, PERFETTO_MAX_EVENTS, type ExportFormat, type ExportResult } from "../lib/platform";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { FloatingPanel } from "./FloatingPanel";
 import { formatFull, Minimap, type MinimapAxis, type VisibleRange } from "./Minimap";
 import { ThreadLanes } from "./ThreadLanes";
@@ -143,6 +144,17 @@ function clamp(v: number, lo: number, hi: number) {
   return Math.min(Math.max(v, lo), hi);
 }
 
+/** Status bar text after an export. */
+function exportMessage(r: ExportResult): string {
+  if (r.events == null) return `Saved to ${r.path}`;
+  if (r.truncated)
+    return (
+      `Saved the first ${r.events.toLocaleString()} events of ${r.rows.toLocaleString()} rows to ${r.path} ` +
+      `(Perfetto limit): narrow the filter or time range for the rest`
+    );
+  return `Saved ${r.events.toLocaleString()} events to ${r.path}`;
+}
+
 /* ---------------- Component ---------------- */
 export const LogViewer = ({
   baseUrl,
@@ -157,6 +169,7 @@ export const LogViewer = ({
   minimapAxis,
   minimapColor,
   lanesField,
+  trackField,
   searchOpen,
   onSearchOpenChange,
   statusStart,
@@ -185,6 +198,8 @@ export const LogViewer = ({
   minimapColor: string;
   /** Thread swimlanes by this field; null hides them */
   lanesField: FieldDef | null;
+  /** Perfetto export: one track per value of this field (the lanes' field) */
+  trackField: FieldDef | null;
   /** The floating "Search & go to line" panel */
   searchOpen: boolean;
   onSearchOpenChange: (open: boolean) => void;
@@ -621,10 +636,12 @@ export const LogViewer = ({
 
   /* ---------------- Export (written by Rust after a native Save dialog) ---------------- */
   const [exportMsg, setExportMsg] = useState<string | null>(null);
-  const download = async (format: "txt" | "csv") => {
+  const [perfettoSaved, setPerfettoSaved] = useState(false);
+  const download = async (format: ExportFormat) => {
     // An <a href> download would navigate the whole webview away
     const p = new URLSearchParams(filterParams);
     setExportMsg("Exporting…");
+    setPerfettoSaved(false);
     try {
       const saved = await exportView({
         sessionId,
@@ -636,8 +653,10 @@ export const LogViewer = ({
         timeTo: timeRange?.to ?? null,
         context,
         format,
+        trackField: trackField?.name ?? null,
       });
-      setExportMsg(saved ? `Saved to ${saved}` : null);
+      setExportMsg(saved ? exportMessage(saved) : null);
+      setPerfettoSaved(!!saved && format === "perfetto");
     } catch (e) {
       setExportMsg(`Export failed: ${e}`);
     }
@@ -799,6 +818,16 @@ export const LogViewer = ({
             {exportMsg}
           </div>
         )}
+        {perfettoSaved && (
+          <button
+            type="button"
+            className="shrink-0 text-xs font-medium text-muted-foreground hover:text-foreground hover:underline"
+            title="Opens ui.perfetto.dev in the browser; drop the saved file on it"
+            onClick={() => openUrl("https://ui.perfetto.dev/").catch(() => {})}
+          >
+            Open Perfetto
+          </button>
+        )}
         <span className="hidden text-xs text-muted-foreground sm:inline">Export</span>
         <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" disabled={!rowCount} onClick={() => download("txt")}>
           <Download className="size-3.5" />
@@ -807,6 +836,25 @@ export const LogViewer = ({
         <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" disabled={!rowCount} onClick={() => download("csv")}>
           <Download className="size-3.5" />
           CSV
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="h-6 px-2 text-xs"
+          disabled={!rowCount}
+          onClick={() => download("perfetto")}
+          title={
+            `A trace for ui.perfetto.dev: each line an event on a track per ${trackField?.label.toLowerCase() ?? "file"}, ` +
+            `coloured by level` +
+            (rowCount > PERFETTO_MAX_EVENTS
+              ? `. ${rowCount.toLocaleString()} rows: only the first ${PERFETTO_MAX_EVENTS.toLocaleString()} ` +
+                `are written (more would not load in Perfetto), narrow the filter or time range for the rest`
+              : "")
+          }
+        >
+          <Download className="size-3.5" />
+          Perfetto
+          {rowCount > PERFETTO_MAX_EVENTS && <span className="text-amber-500" aria-label="limited">*</span>}
         </Button>
       </div>
 

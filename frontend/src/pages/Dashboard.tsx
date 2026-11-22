@@ -580,6 +580,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
                             minimapAxis={minimapAxis}
                             minimapColor={effectiveMinimapColor}
                             lanesField={showLanes && lanesFieldDef ? lanesFieldDef : null}
+                            trackField={lanesFieldDef}
                             searchOpen={searchOpen}
                             onSearchOpenChange={setSearchOpen}
                             timeSpan={timeSpan}

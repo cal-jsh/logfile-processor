@@ -17,6 +17,7 @@
 //! from, if any. With no terminal (stderr not a tty) errors go to the window, as
 //! with Explorer on Windows.
 
+use logfile_processor::api::view::ExportFormat;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
@@ -38,7 +39,7 @@ pub enum Cli {
     /// Start the viewer, optionally with files to open (one window each).
     Open(Vec<PathBuf>),
     /// Filter one file without a window.
-    Filter(FilterArgs),
+    Filter(Box<FilterArgs>),
 }
 
 /// A filter run on the command line. Within a kind any value matches; across kinds
@@ -61,8 +62,12 @@ pub struct FilterArgs {
     pub pattern: Option<String>,
     /// `None` or `-`: standard output
     pub output: Option<PathBuf>,
-    /// `Some(true)` CSV, `Some(false)` text, `None`: from the output file's extension
-    pub csv: Option<bool>,
+    /// As asked; `None`: from the output file's extension
+    pub export: Option<ExportFormat>,
+    /// Perfetto: field whose values become tracks (`None`: thread, else the first)
+    pub tracks: Option<String>,
+    /// Perfetto: events written at most
+    pub max_events: Option<u64>,
 }
 
 impl FilterArgs {
@@ -71,16 +76,26 @@ impl FilterArgs {
         self.output.as_deref().is_none_or(|p| p.as_os_str() == "-")
     }
 
-    /// Write CSV: as asked, else when the output file ends in `.csv`.
-    pub fn csv(&self) -> bool {
-        self.csv.unwrap_or_else(|| {
-            !self.to_stdout()
-                && self
-                    .output
-                    .as_deref()
-                    .and_then(Path::extension)
-                    .is_some_and(|e| e.eq_ignore_ascii_case("csv"))
+    /// The output format: as asked, else CSV when the output file ends in `.csv`, a
+    /// Perfetto trace when it ends in `.json`, text otherwise.
+    pub fn export_format(&self) -> ExportFormat {
+        self.export.unwrap_or_else(|| {
+            let ext = match self.to_stdout() {
+                true => None,
+                false => self.output.as_deref().and_then(Path::extension).and_then(|e| e.to_str()),
+            };
+            match ext.map(str::to_ascii_lowercase).as_deref() {
+                Some("csv") => ExportFormat::Csv,
+                Some("json") => ExportFormat::Perfetto,
+                _ => ExportFormat::Text,
+            }
         })
+    }
+
+    /// Short for `export_format() == Csv`.
+    #[cfg(test)]
+    pub fn csv(&self) -> bool {
+        self.export_format() == ExportFormat::Csv
     }
 }
 
@@ -155,14 +170,33 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Cli, String> {
             }
             "-p" | "--pattern" => f.pattern = Some(value()?),
             "-o" | "--output" => f.output = Some(PathBuf::from(value()?)),
-            "--csv" => f.csv = Some(true),
-            "--txt" | "--text" => f.csv = Some(false),
+            "--csv" => f.export = Some(ExportFormat::Csv),
+            "--txt" | "--text" => f.export = Some(ExportFormat::Text),
+            "--perfetto" => f.export = Some(ExportFormat::Perfetto),
             "--format" => {
-                f.csv = Some(match value()?.to_ascii_lowercase().as_str() {
-                    "csv" => true,
-                    "txt" | "text" => false,
-                    other => return Err(format!("--format is txt or csv (got '{other}')")),
-                })
+                let v = value()?;
+                f.export = Some(
+                    ExportFormat::parse(v.trim())
+                        .ok_or_else(|| format!("--format is txt, csv or perfetto (got '{v}')"))?,
+                )
+            }
+            "--tracks" => {
+                let v = value()?;
+                if v.trim().is_empty() {
+                    return Err(format!("{name} needs a field name, e.g. thread"));
+                }
+                f.tracks = Some(v.trim().to_string());
+            }
+            "--max-events" => {
+                let v = value()?;
+                f.max_events = Some(
+                    v.trim()
+                        .replace('_', "")
+                        .parse()
+                        .ok()
+                        .filter(|&n| n > 0)
+                        .ok_or_else(|| format!("{name} takes a number of events (got '{v}')"))?,
+                );
             }
             _ => return Err(format!("unknown option '{s}' (see --help)")),
         }
@@ -175,7 +209,7 @@ pub fn parse<I: IntoIterator<Item = OsString>>(args: I) -> Result<Cli, String> {
         0 => Err("give the log file to filter (see --help)".into()),
         1 => {
             f.file = files.pop().unwrap();
-            Ok(Cli::Filter(f))
+            Ok(Cli::Filter(Box::new(f)))
         }
         _ => Err("filtering takes one log file at a time".into()),
     }
@@ -222,7 +256,17 @@ Output:
   -o, --output FILE          Write to FILE instead of the terminal ('-': the terminal)
       --csv                  CSV: line number, a column per field, Matched, Context,
                              and the whole line. Default when FILE ends in .csv
+      --perfetto             A Perfetto trace (JSON) to open in ui.perfetto.dev: each
+                             line an instant event on a track per thread, named and
+                             coloured by level, message and fields as args; lines
+                             without a time (stack traces) join the line before.
+                             Default when FILE ends in .json
       --txt                  The original lines as text. Default otherwise
+      --format FORMAT        txt, csv or perfetto
+      --tracks FIELD         Perfetto: one track per value of FIELD (default: thread,
+                             else the first other field), e.g. --tracks domain
+      --max-events N         Perfetto: stop after N events (default {max_events});
+                             much more and the Perfetto UI runs out of memory
   -p, --pattern PATTERN      Line format in spdlog syntax instead of detecting it,
                              e.g. "[%Y-%m-%d %H:%M:%S.%e] [%l] [%n] %v"
 
@@ -244,6 +288,9 @@ Examples:
   Lines with an HTTP status 500 to 599, ignoring case of "status":
     {cli} app.log -e "(?i)status[ =:]*5\d\d\b"
 
+  Errors with 5 lines around each as a Perfetto trace, tracks per domain:
+    {cli} app.log -l error -C 5 --tracks domain -o errors.perfetto.json
+
   Warnings of thread 12 that mention a disk, through another command:
     {cli} app.log -l warn -f thread=12 | Select-String disk
 
@@ -255,6 +302,7 @@ writable, 2 bad option, pattern or field.
 "#,
         version = env!("CARGO_PKG_VERSION"),
         cli = CLI_EXE,
+        max_events = logfile_processor::api::perfetto::DEFAULT_MAX_EVENTS,
     )
 }
 
@@ -319,7 +367,7 @@ mod tests {
 
     fn filter(args: &[&str]) -> FilterArgs {
         match p(args) {
-            Ok(Cli::Filter(f)) => f,
+            Ok(Cli::Filter(f)) => *f,
             other => panic!("not a filter: {other:?}"),
         }
     }
@@ -364,6 +412,15 @@ mod tests {
         let f = filter(&["a.log", "-o", "out.CSV", "--txt"]);
         assert!(!f.csv());
         assert!(filter(&["a.log", "--format", "csv"]).csv());
+
+        // Perfetto by option or by a .json output file
+        let perfetto = |args: &[&str]| filter(args).export_format() == ExportFormat::Perfetto;
+        assert!(perfetto(&["a.log", "-o", "x.perfetto.json"]));
+        assert!(perfetto(&["a.log", "--perfetto"]));
+        assert!(perfetto(&["a.log", "--format=Perfetto", "-o", "x.txt"]));
+        assert!(!perfetto(&["a.log", "-o", "x.json", "--txt"]));
+        let f = filter(&["a.log", "--perfetto", "--tracks", " domain ", "--max-events", "1_000"]);
+        assert_eq!((f.tracks.as_deref(), f.max_events), (Some("domain"), Some(1000)));
     }
 
     #[test]
@@ -375,6 +432,8 @@ mod tests {
         assert!(p(&["a.log", "-k"]).unwrap_err().contains("needs a value"));
         assert!(p(&["a.log", "-k", " "]).is_err());
         assert!(p(&["a.log", "--format", "xml"]).is_err());
+        assert!(p(&["a.log", "--max-events", "0"]).unwrap_err().contains("number of events"));
+        assert!(p(&["a.log", "--tracks", ""]).is_err());
     }
 
     #[test]
