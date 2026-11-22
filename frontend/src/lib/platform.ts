@@ -72,3 +72,28 @@ export interface CliHelp {
 export function cliHelp(): Promise<CliHelp> {
   return invoke<CliHelp>("cli_help");
 }
+
+/** A time range cut out of the open log into a new file (see `cutTimeRange`). */
+export interface CutResult {
+  /** Full path of the new file, next to the log */
+  path: string;
+  /** Its file name */
+  name: string;
+  line_count: number;
+  byte_count: number;
+  /** 1-based lines of the log that were copied */
+  first_line: number;
+  last_line: number;
+  millis: number;
+}
+
+/** Copy the lines of a time range (ms, log clock, `to` excluded) of the open log, as they
+    are, to a new file next to it, named after the log and the range. Never overwrites. */
+export function cutTimeRange(sessionId: string, timeFrom: number, timeTo: number): Promise<CutResult> {
+  return invoke<CutResult>("cut_time_range", { sessionId, timeFrom, timeTo });
+}
+
+/** Show a file selected in Explorer. */
+export function revealPath(path: string): Promise<void> {
+  return invoke<void>("reveal_path", { path });
+}

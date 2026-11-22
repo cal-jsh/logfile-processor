@@ -1,3 +1,4 @@
+pub mod cut;
 pub mod format;
 pub mod lanes;
 pub mod minimap;

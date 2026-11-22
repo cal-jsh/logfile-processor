@@ -178,6 +178,7 @@ export function Minimap({
   timeRange,
   onTimeRangeChange,
   lanesWindow,
+  rangeAction,
 }: {
   baseUrl: string;
   sessionId: string;
@@ -193,6 +194,8 @@ export function Minimap({
   onTimeRangeChange: (r: TimeRange | null) => void;
   /** The thread lanes' zoomed time window, marked on the time axis (null: not zoomed) */
   lanesWindow?: TimeRange | null;
+  /** Shown in the name column of the time scale while a time range is set (Cut to file) */
+  rangeAction?: React.ReactNode;
 }) {
   const barRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -410,7 +413,9 @@ export function Minimap({
       {/* time scale */}
       {axis === "time" && (
         <div className="flex border-b border-log-ink/5" style={{ height: AXIS_HEIGHT }}>
-          <div className="shrink-0 border-r border-log-ink/5" style={{ width: LABEL_W }} />
+          <div className="shrink-0 border-r border-log-ink/5" style={{ width: LABEL_W }}>
+            {timeRange && canSelect && rangeAction}
+          </div>
           <div
             className="relative min-w-0 flex-1 touch-none overflow-hidden"
             onPointerDown={onScaleDown}

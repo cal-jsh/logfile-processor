@@ -163,6 +163,7 @@ export const LogViewer = ({
   timeSpan,
   timeRange,
   onTimeRangeChange,
+  rangeAction,
 }: {
   baseUrl: string;
   sessionId: string;
@@ -194,6 +195,8 @@ export const LogViewer = ({
   /** The time range filter (already part of `filterParams`) */
   timeRange: TimeRange | null;
   onTimeRangeChange: (r: TimeRange | null) => void;
+  /** Shown on the minimap's time scale while a time range is set */
+  rangeAction?: React.ReactNode;
 }) => {
   // level colours come from the theme's palette: render again when it changes
   useTheme();
@@ -819,6 +822,7 @@ export const LogViewer = ({
           timeRange={timeRange}
           onTimeRangeChange={onTimeRangeChange}
           lanesWindow={lanesField ? lanesWindow : null}
+          rangeAction={rangeAction}
         />
       )}
 
