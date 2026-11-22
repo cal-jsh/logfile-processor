@@ -5,6 +5,7 @@ import { useTheme } from "../lib/theme";
 import { formatFull, timeTicks, type VisibleRange } from "./Minimap";
 import { RangeShade, rangeCursor, useTimeRangeDrag, type TimeRange } from "./TimeRangeSelect";
 import { IndexingSweep } from "./IndexingSweep";
+import { dialogOpen, isTypingTarget, prefersReducedMotion } from "../lib/keys";
 import { END_W, LABEL_W } from "./plotColumns";
 
 /*
@@ -17,7 +18,9 @@ import { END_W, LABEL_W } from "./plotColumns";
  * each, in name order; the rest share an "other" lane at the bottom. More lanes than fit
  * scroll vertically; the panel height can be dragged.
  *
- * Zoom: Ctrl+wheel or the buttons; Shift+drag (or the middle button) to pan, Shift+wheel too. The backend re-bins the
+ * Zoom: Ctrl+wheel or the buttons; Shift+drag (or the middle button) to pan, Shift+wheel too.
+ * With the pointer over the panel W/S zoom in/out at the pointer and A/D pan, smoothly while
+ * held, as in Perfetto (a step per press with reduced motion). The backend re-bins the
  * zoomed window from the lines in it, so zooming in shows finer detail, not bigger pixels.
  * While the new window loads, the previous one is drawn stretched.
  *
@@ -36,6 +39,20 @@ const AXIS_H = 18;
 const MIN_SPAN = 50; // ms, deepest zoom
 const DEFAULT_HEIGHT = 168;
 const MAX_BUCKETS = 16384;
+const FETCH_DEBOUNCE = 120; // ms of quiet before a zoomed window is fetched
+const FETCH_MAX_WAIT = 250; // ms, at the latest while zooming or panning goes on
+
+/* Keyboard navigation, as in Perfetto: W/S zoom in/out at the pointer, A/D pan, smooth while
+   held. Speeds at full ramp; a key starts at KEY_RAMP_START of it and reaches full speed
+   after KEY_RAMP_MS, so a tap is a small step and holding it gets going. */
+const NAV_KEYS: Record<string, "in" | "out" | "left" | "right"> = { KeyW: "in", KeyS: "out", KeyA: "left", KeyD: "right" };
+const ZOOM_PER_S = Math.LN2 / 0.3; // the span halves every 0.3 s
+const PAN_PER_S = 1.2; // window widths per second
+const KEY_RAMP_START = 0.45;
+const KEY_RAMP_MS = 500;
+// reduced motion: one step per keypress (and per auto-repeat), no animation
+const STEP_ZOOM = 0.6;
+const STEP_PAN = 0.2;
 
 /** Level codes of the API (as the minimap) */
 const CODE_LEVEL = [null, "OTHER", "TRACE", "DEBUG", "INFO", "WARN", "ERROR", "CRITICAL"] as const;
@@ -209,38 +226,79 @@ export function ThreadLanes({
     };
   }, []);
 
-  /* fetch: debounced, so zooming and panning ask once they pause */
+  /* fetch: debounced, so zooming and panning ask once they pause, but at least every
+     FETCH_MAX_WAIT while they go on (holding W), so detail fills in on the way. A request
+     for an earlier window of the same lanes is not aborted: any response can be drawn
+     (stretched to the view), only an older one never replaces a newer one. One request at
+     a time; a window asked for meanwhile is fetched when it returns. */
+  const reqs = useRef<{ base: string; ctrls: Set<AbortController>; skipped: boolean }>({ base: "", ctrls: new Set(), skipped: false });
+  const reqSeq = useRef({ sent: 0, shown: 0 });
+  const pendingSince = useRef<number | null>(null);
+  const [refetch, setRefetch] = useState(0);
   useEffect(() => {
     if (!pxWidth) return;
-    const ctrl = new AbortController();
-    const win = view ? `&from_ms=${Math.floor(view.from)}&to_ms=${Math.ceil(view.to)}` : "";
-    const query = `session_id=${encodeURIComponent(sessionId)}&field=${encodeURIComponent(field)}${filterParams}&buckets=${pxWidth}${win}`;
+    const base = `${baseUrl}|${key}|${pxWidth}`;
+    if (reqs.current.base !== base) {
+      reqs.current.ctrls.forEach((c) => c.abort());
+      reqs.current = { base, ctrls: new Set(), skipped: false };
+    }
+    // a zoomed window is fetched with a window's width to spare on each side, at the same
+    // resolution, so panning (A/D, Shift+drag) shows lanes at once instead of a blank edge
+    let win = "";
+    let buckets = pxWidth;
+    if (view) {
+      const span = view.to - view.from;
+      const from = Math.max(t0, view.from - span);
+      const to = Math.min(t1, view.to + span);
+      buckets = Math.min(MAX_BUCKETS, Math.round((pxWidth * (to - from)) / span));
+      win = `&from_ms=${Math.floor(from)}&to_ms=${Math.ceil(to)}`;
+    }
+    const query = `session_id=${encodeURIComponent(sessionId)}&field=${encodeURIComponent(field)}${filterParams}&buckets=${buckets}${win}`;
+    const now = performance.now();
+    pendingSince.current ??= now;
+    const wait = view ? Math.max(0, Math.min(FETCH_DEBOUNCE, pendingSince.current + FETCH_MAX_WAIT - now)) : 0;
     const timer = setTimeout(() => {
+      pendingSince.current = null;
+      const r = reqs.current;
+      if (r.ctrls.size) {
+        r.skipped = true; // asked again when the one in flight returns
+        return;
+      }
+      const ctrl = new AbortController();
+      r.ctrls.add(ctrl);
+      const id = ++reqSeq.current.sent;
       setLoading(true);
       fetch(`${baseUrl}/lanes?${query}`, { signal: ctrl.signal })
-        .then(async (r) => {
-          if (r.status === 409) return null; // superseded by a newer filter
-          if (!r.ok) throw new Error((await r.text()) || String(r.status));
-          return r.json();
+        .then(async (res) => {
+          if (res.status === 409) return null; // superseded by a newer filter
+          if (!res.ok) throw new Error((await res.text()) || String(res.status));
+          return res.json();
         })
         .then((d: LanesData | null) => {
-          if (d) {
+          if (d && id > reqSeq.current.shown) {
+            reqSeq.current.shown = id;
             setFetched({ data: d, query, key });
             setError(null);
           }
-          setLoading(false);
         })
         .catch((e) => {
-          if (e?.name === "AbortError") return;
+          if (e?.name !== "AbortError") setError(String(e?.message ?? e));
+        })
+        .finally(() => {
+          r.ctrls.delete(ctrl);
+          if (reqs.current !== r || r.ctrls.size) return;
           setLoading(false);
-          setError(String(e?.message ?? e));
+          if (r.skipped) {
+            r.skipped = false;
+            setRefetch((n) => n + 1);
+          }
         });
-    }, view ? 120 : 0);
-    return () => {
-      clearTimeout(timer);
-      ctrl.abort();
-    };
-  }, [baseUrl, sessionId, field, filterParams, pxWidth, view, key]);
+    }, wait);
+    return () => clearTimeout(timer);
+    // t0/t1 left out on purpose: they only matter with a view, which needs them set already,
+    // and their arrival with the first response must not fetch the whole file again
+  }, [baseUrl, sessionId, field, filterParams, pxWidth, view, key, refetch]);
+  useEffect(() => () => reqs.current.ctrls.forEach((c) => c.abort()), []);
 
   /* draw */
   useEffect(() => {
@@ -316,6 +374,94 @@ export function ThreadLanes({
     el.addEventListener("wheel", h, { passive: false });
     return () => el.removeEventListener("wheel", h);
   }, []);
+
+  /* W/S/A/D while the pointer is over the panel (see NAV_KEYS). The window being animated
+     is kept in a ref, so frames that come faster than React renders still build on each other. */
+  const pointer = useRef({ x: 0, inside: false });
+  const shownWin = useRef<Window>({ from: vf, to: vt });
+  shownWin.current = { from: vf, to: vt };
+  const navRef = useRef<(zoom: number, pan: number) => void>(() => { });
+  /** zoom: factor on the span (< 1 zooms in) at the pointer; pan: fraction of the span (> 0 later) */
+  navRef.current = (zoom, pan) => {
+    if (!hasTime) return;
+    const { from, to } = shownWin.current;
+    let span = to - from;
+    let f = from;
+    if (zoom !== 1) {
+      const r = areaRef.current?.getBoundingClientRect();
+      const px = r && r.width > 0 ? (pointer.current.x - r.left) / r.width : 0.5;
+      const frac = px >= 0 && px <= 1 ? px : 0.5; // over the names: the middle
+      const at = f + frac * span;
+      span *= zoom;
+      f = at - frac * span;
+    }
+    f += pan * span;
+    const next = clampView(f, f + span);
+    if (!next && !view) return; // whole file already
+    if (next && view && next.from === view.from && next.to === view.to) return;
+    setView(next);
+    const w = next ?? { from: t0, to: t1 > t0 ? t1 : t0 + 1 };
+    shownWin.current = w;
+    // the pointer line keeps its spot; the time under it moves when panning
+    if (cssWidth) setHover((h) => (h ? { ...h, time: w.from + (h.x / cssWidth) * (w.to - w.from), at: pan ? null : h.at } : h));
+  };
+  const heldKeys = useRef(new Map<string, number>()); // code -> when pressed
+  useEffect(() => {
+    const held = heldKeys.current;
+    let raf = 0;
+    let last = 0;
+    const frame = (now: number) => {
+      const dt = Math.max(0, Math.min(0.05, (now - last) / 1000));
+      last = now;
+      let zoom = 0;
+      let pan = 0;
+      held.forEach((since, code) => {
+        const ramp = Math.min(1, KEY_RAMP_START + ((1 - KEY_RAMP_START) * (now - since)) / KEY_RAMP_MS);
+        const k = NAV_KEYS[code];
+        if (k === "in") zoom -= ramp;
+        else if (k === "out") zoom += ramp;
+        else if (k === "left") pan -= ramp;
+        else if (k === "right") pan += ramp;
+      });
+      if (zoom || pan) navRef.current(Math.exp(zoom * ZOOM_PER_S * dt), pan * PAN_PER_S * dt);
+      raf = held.size ? requestAnimationFrame(frame) : 0;
+    };
+    const onDown = (e: KeyboardEvent) => {
+      const k = NAV_KEYS[e.code];
+      if (!k || e.ctrlKey || e.altKey || e.metaKey) return;
+      if (!pointer.current.inside || isTypingTarget(e.target) || dialogOpen()) return;
+      e.preventDefault();
+      if (prefersReducedMotion()) {
+        navRef.current(k === "in" ? STEP_ZOOM : k === "out" ? 1 / STEP_ZOOM : 1, k === "left" ? -STEP_PAN : k === "right" ? STEP_PAN : 0);
+        return;
+      }
+      if (held.has(e.code)) return; // auto-repeat: the animation is already running
+      held.set(e.code, performance.now());
+      if (!raf) {
+        last = performance.now();
+        raf = requestAnimationFrame(frame);
+      }
+    };
+    const onUp = (e: KeyboardEvent) => held.delete(e.code);
+    const release = () => held.clear();
+    window.addEventListener("keydown", onDown);
+    window.addEventListener("keyup", onUp);
+    window.addEventListener("blur", release);
+    return () => {
+      window.removeEventListener("keydown", onDown);
+      window.removeEventListener("keyup", onUp);
+      window.removeEventListener("blur", release);
+      cancelAnimationFrame(raf);
+      held.clear();
+    };
+  }, []);
+  const onPanelPointer = (e: React.PointerEvent) => {
+    pointer.current = { x: e.clientX, inside: true };
+  };
+  const onPanelLeave = () => {
+    pointer.current.inside = false;
+    heldKeys.current.clear();
+  };
 
   /* hover readout: the first line of that thread near the pointer, fetched when the
      pointer rests a moment */
@@ -483,17 +629,23 @@ export function ThreadLanes({
   const atLevel = hover?.at?.level != null ? CODE_LEVEL[hover.at.level] : null;
 
   return (
-    <div ref={panelRef} className="relative shrink-0 select-none border-b border-log-ink/10 bg-log-panel text-log-fg">
+    <div
+      ref={panelRef}
+      className="relative shrink-0 select-none border-b border-log-ink/10 bg-log-panel text-log-fg"
+      onPointerEnter={onPanelPointer}
+      onPointerMove={onPanelPointer}
+      onPointerLeave={onPanelLeave}
+    >
       {/* header: name column and time scale */}
       <div className="flex border-b border-log-ink/5" style={{ height: AXIS_H }}>
         <div className="flex shrink-0 items-center gap-0.5 border-r border-log-ink/5 pl-2 pr-1 text-[10px] text-log-fg/60" style={{ width: LABEL_W }}>
           <span className="mr-auto truncate" title={data ? `${fieldLabel} lanes: the ${data.max_lanes} busiest get a lane each` : undefined}>
             {fieldLabel}s{data ? ` · ${(data.lanes.length + data.other_values).toLocaleString()}` : ""}
           </span>
-          <button type="button" title="Zoom in (Ctrl+wheel)" aria-label="Zoom in" disabled={!hasTime || vt - vf <= MIN_SPAN} onClick={() => zoomAt(0.5, 0.5)} className="rounded p-0.5 hover:bg-log-ink/10 disabled:opacity-30">
+          <button type="button" title="Zoom in (W or Ctrl+wheel, at the pointer)" aria-label="Zoom in" disabled={!hasTime || vt - vf <= MIN_SPAN} onClick={() => zoomAt(0.5, 0.5)} className="rounded p-0.5 hover:bg-log-ink/10 disabled:opacity-30">
             <ZoomIn className="size-3" />
           </button>
-          <button type="button" title="Zoom out" aria-label="Zoom out" disabled={!view} onClick={() => zoomAt(0.5, 2)} className="rounded p-0.5 hover:bg-log-ink/10 disabled:opacity-30">
+          <button type="button" title="Zoom out (S or Ctrl+wheel)" aria-label="Zoom out" disabled={!view} onClick={() => zoomAt(0.5, 2)} className="rounded p-0.5 hover:bg-log-ink/10 disabled:opacity-30">
             <ZoomOut className="size-3" />
           </button>
           <button type="button" title="Whole file" aria-label="Show the whole file" disabled={!view} onClick={() => setView(null)} className="rounded p-0.5 hover:bg-log-ink/10 disabled:opacity-30">
@@ -521,7 +673,7 @@ export function ThreadLanes({
           onPointerMove={onScaleMove}
           onPointerUp={() => range.dragging() && range.end()}
           onPointerCancel={range.cancel}
-          title={hasTime ? `Drag to filter a time range${view || timeRange ? " · double-click: whole file, no time range" : ""}` : undefined}
+          title={hasTime ? `Drag to filter a time range · W/S zoom, A/D pan${view || timeRange ? " · double-click: whole file, no time range" : ""}` : undefined}
         >
           {ticks.map(({ t, label }) => {
             const x = ((t - vf) / (vt - vf)) * cssWidth;

@@ -13,6 +13,7 @@ import type { MinimapAxis } from "../components/Minimap";
 import { formatDuration, formatRangeTime, RANGE_COLOR, type TimeRange } from "../components/TimeRangeSelect";
 import { RegexToggle } from "../components/RegexToggle";
 import { useTheme } from "../lib/theme";
+import { isTypingTarget } from "../lib/keys";
 import { CutChipButton, CutNote, CutScaleButton, useCutRange, type CutState } from "../components/CutRange";
 
 interface DashboardProps {
@@ -56,15 +57,6 @@ function useStoredFlag(key: string, fallback: boolean): [boolean, (v: boolean) =
         }
     };
     return [value, set];
-}
-
-/** Keys typed here keep their own meaning (Ctrl+arrows move by word in a text field) */
-function isTypingTarget(t: EventTarget | null): boolean {
-    if (!(t instanceof HTMLElement)) return false;
-    if (t.isContentEditable || t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement) return true;
-    if (t instanceof HTMLInputElement) return !["checkbox", "radio", "button", "submit", "reset", "color", "file"].includes(t.type);
-    // modal dialogs (log format, bug report, ...) and open dropdown lists
-    return !!t.closest('[data-slot="dialog-content"], [role="listbox"], [role="menu"]');
 }
 
 /** A keyword, or a regular expression (Rust regex syntax), of the filter bar */
