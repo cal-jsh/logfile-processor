@@ -271,3 +271,14 @@ mark.mark-search {
   border-radius: 2px;
   background: color-mix(in srgb, var(--lanes-window) 14%, transparent);
 }
+
+/* "Cut to file" on the minimap's time scale: a dashed cut line under the scissors */
+.cut-scale {
+  background-image: linear-gradient(to right, color-mix(in srgb, var(--range) 70%, transparent) 55%, transparent 0);
+  background-size: 6px 1px;
+  background-repeat: repeat-x;
+  background-position: 0 calc(100% - 1px);
+}
+.cut-scale:hover {
+  background-color: color-mix(in srgb, var(--range) 12%, transparent);
+}

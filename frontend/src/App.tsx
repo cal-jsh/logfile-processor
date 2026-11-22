@@ -194,6 +194,7 @@ export default function App() {
                 fileName={filePath ?? undefined}
                 onClose={closeFile}
                 onChangeFormat={changeFormat}
+                onOpenPath={openRecent}
             />
         );
     }

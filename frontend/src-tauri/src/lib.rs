@@ -128,6 +128,27 @@ async fn export_view(
     Ok(Some(path.to_string_lossy().into_owned()))
 }
 
+/// Cut the time range `[time_from, time_to)` (ms, log clock) out of the session's log
+/// into a new file next to it, named after the log and the range. Only the lines in the
+/// range are read; the copy is streamed, so a cut of several GB needs no memory.
+#[tauri::command]
+async fn cut_time_range(
+    session_id: String,
+    time_from: f64,
+    time_to: f64,
+) -> Result<logfile_processor::api::cut::CutResult, String> {
+    logfile_processor::api::cut::cut_time_range(&session_id, time_from, time_to).await
+}
+
+/// Show a file selected in the system file manager (Explorer).
+#[tauri::command]
+async fn reveal_path(path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || tauri_plugin_opener::reveal_item_in_dir(path))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
 /// The file from the command line (or dropped onto the exe icon), already checked:
 /// a path to open, or the message saying why it cannot be opened.
 struct InitialFile(Mutex<Option<Result<String, String>>>);
@@ -400,6 +421,8 @@ fn run_with(initial: Option<Result<String, String>>) {
             pick_log_file,
             reformat_log,
             export_view,
+            cut_time_range,
+            reveal_path,
             files_exist,
             initial_file,
             cli_help

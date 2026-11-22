@@ -13,6 +13,7 @@ import type { MinimapAxis } from "../components/Minimap";
 import { formatDuration, formatRangeTime, RANGE_COLOR, type TimeRange } from "../components/TimeRangeSelect";
 import { RegexToggle } from "../components/RegexToggle";
 import { useTheme } from "../lib/theme";
+import { CutChipButton, CutNote, CutScaleButton, useCutRange, type CutState } from "../components/CutRange";
 
 interface DashboardProps {
     sessionId: string;
@@ -25,6 +26,8 @@ interface DashboardProps {
     onClose?: () => void;
     /** Reopen the file with another line format (null: detect it) */
     onChangeFormat: (pattern: string | null) => Promise<void>;
+    /** Open another file by path in this window (a cut made from this one) */
+    onOpenPath?: (path: string) => void;
 }
 
 const FIELD_ICONS: Record<string, React.ReactNode> = {
@@ -74,7 +77,7 @@ async function checkRegex(baseUrl: string, pattern: string, signal?: AbortSignal
     return ((await r.json()) as { error: string | null }).error;
 }
 
-export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summary, fileName, onClose, onChangeFormat }) => {
+export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summary, fileName, onClose, onChangeFormat, onOpenPath }) => {
     // the level colours (sidebar, filter bar) follow the theme: render again when it changes
     useTheme();
     const [selectedLevels, setSelectedLevels] = useState<string[]>([]);
@@ -108,6 +111,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
     // time range filter (ms, log clock, `to` excluded): set by dragging on the minimap or
     // the thread lanes, or typed in Go to; applied at once (no debounce, it comes from a drag)
     const [timeRange, setTimeRange] = useState<TimeRange | null>(null);
+    // "Cut to file" of the time range (scissors on the chip and on the minimap's scale)
+    const cutter = useCutRange(sessionId);
 
     const [contextLines, setContextLines] = useState<number>(0);
 
@@ -534,6 +539,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
                                         range={timeRange}
                                         onClear={() => setTimeRange(null)}
                                         onPick={showTimeScale}
+                                        cutter={cutter}
                                         timeScaleShown={showMinimap && minimapAxis === "time"}
                                     />
                                 )}
@@ -579,6 +585,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
                             timeSpan={timeSpan}
                             timeRange={timeRange}
                             onTimeRangeChange={setTimeRange}
+                            rangeAction={timeRange && <CutScaleButton range={timeRange} state={cutter} />}
                             statusStart={
                                 !filterOpen && (
                                     <FilterSummary
@@ -597,6 +604,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
                     </div>
                 </div>
             </SidebarInset>
+            <CutNote note={cutter.note} onDismiss={cutter.dismiss} onOpen={onOpenPath} />
         </SidebarProvider>
     );
 };
@@ -608,11 +616,13 @@ function TimeRangeChip({
     onClear,
     onPick,
     timeScaleShown,
+    cutter,
 }: {
     range: TimeRange | null;
     onClear: () => void;
     onPick: () => void;
     timeScaleShown: boolean;
+    cutter: CutState;
 }) {
     if (!range) {
         return (
@@ -642,6 +652,7 @@ function TimeRangeChip({
                 {formatRangeTime(range.from)} – {formatRangeTime(range.to, range.from)}
             </span>
             <span className="shrink-0 text-muted-foreground">{formatDuration(range.to - range.from)}</span>
+            <CutChipButton range={range} state={cutter} />
             <button
                 type="button"
                 aria-label="Clear the time range"
