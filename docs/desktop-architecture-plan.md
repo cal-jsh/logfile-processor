@@ -38,10 +38,10 @@ measurably faster.
 | `backend/src/logfile/view.rs` | `MatchSet` (matches as sorted line ranges) and `View` (matches ± context, built by range merge, no rescan) |
 | `backend/src/logfile/levels.rs`, `categories.rs`, `timeline.rs`, `lanes.rs` | Per-session aggregates for the minimap (level / field group per line, time bins) and thread lanes (level counts per lane × 16,384 time slices) |
 | `backend/src/log_storage.rs` | Sessions: file, format, cache of recent filter results and lane windows |
-| `backend/src/api/` | `/view`, `/view/rows`, `/view/search`, `/lines`, `/minimap`, `/lanes`, `/lanes/at`, `/format/test`, `/version` |
-| `frontend/src-tauri/src/lib.rs` | Starts the API, Tauri commands (`open_log_path`, `reformat_log`, `pick_log_file`, `export_view`, `files_exist`, ...) |
+| `backend/src/api/` | `/view`, `/view/rows`, `/view/search`, `/view/lines_at` (bookmarked lines and their rows), `/lines`, `/minimap`, `/lanes`, `/lanes/at`, `/format/test`, `/version` |
+| `frontend/src-tauri/src/lib.rs` | Starts the API, Tauri commands (`open_log_path`, `reformat_log`, `pick_log_file`, `export_view`, `files_exist`, `file_stamp`, `save_text_file`, `open_text_file`, ...) |
 | `frontend/src-tauri/src/cli.rs`, `headless.rs`, `bin/` | Command line parsing, headless filtering to stdout or a file, the console companion exe |
-| `frontend/src/` | React 18 + Vite + Tailwind/shadcn. `LogViewer` (custom fixed-row viewport), `Minimap`, `ThreadLanes`, `FormatDialog`, `FloatingPanel` (search / go to line) |
+| `frontend/src/` | React 18 + Vite + Tailwind/shadcn. `LogViewer` (custom fixed-row viewport), `Minimap`, `ThreadLanes`, `FormatDialog`, `FloatingPanel` (search / go to line, bookmarks), `Bookmarks` + `lib/bookmarks.ts` (bookmark store, export file) |
 
 ## Data flow
 
@@ -99,8 +99,8 @@ in `tauri.conf.json` before it runs; the private key exists only as a CI secret.
 
 | Feature | Design notes |
 |---|---|
-| Annotations (comments, highlights) | Separate store, never written into the log. Anchor to line ranges of a fingerprinted file (size + hashed head/tail/sample blocks), local SQLite in the app data folder. |
-| Shared annotations | Optional small sync service (axum + WebSocket); only annotation records travel, never the log. Server-ordered op log with per-record versions and an offline queue; a CRDT only if live co-editing of one comment is needed. |
+| Annotations (comments, highlights) | **First step done: bookmarks with a note** (Ctrl+B, F2, Bookmarks panel, export/import as text). Kept in localStorage `logviewer.bookmarks` per file path with the file's size + mtime; each bookmark has an id, created/updated times and the start of its line's text, so a changed file is checked line by line (a log that only grew keeps them, a rewritten one flags them). Next: ranges and highlights; move the store to the app data folder (SQLite) once there is more than bookmarks, keyed by a content fingerprint (size + hashed head/tail/sample blocks) so a colleague's copy of the same log matches. |
+| Shared annotations | Optional small sync service (axum + WebSocket); only annotation records travel, never the log (bookmark records already carry ids and updated times for this). Server-ordered op log with per-record versions and an offline queue; a CRDT only if live co-editing of one comment is needed. |
 | Index cache | Persist the line index keyed by fingerprint + size + mtime, so reopening is instant. |
 | Tail mode | Map the size known at open, extend periodically for logs still being written. |
 | Search options | Case-insensitive and regex keywords (today keywords are case-sensitive substrings of the message, any one of them matches). |

@@ -7,7 +7,7 @@ import { Download, LocateFixed, Search } from "lucide-react";
 import { exportView, PERFETTO_MAX_EVENTS, type ExportFormat, type ExportResult } from "../lib/platform";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { FloatingPanel } from "./FloatingPanel";
-import { formatFull, Minimap, type MinimapAxis, type VisibleRange } from "./Minimap";
+import { formatFull, Minimap, type MinimapAxis, type OverviewMark, type VisibleRange } from "./Minimap";
 import { ThreadLanes } from "./ThreadLanes";
 import { formatRange, type TimeRange } from "./TimeRangeSelect";
 import { isLineNumber, parseTimeInput, type ParsedTime } from "../lib/timeInput";
@@ -15,6 +15,9 @@ import type { FieldDef } from "../lib/logSummary";
 import { IndexingSweep } from "./IndexingSweep";
 import { RegexToggle } from "./RegexToggle";
 import { useTheme } from "../lib/theme";
+import { dialogOpen, isTypingTarget } from "../lib/keys";
+import { BookmarkGlyph, BookmarksList, fetchLinesAt, type BookmarkPlace, type BookmarksApi } from "./Bookmarks";
+import type { Bookmark } from "../lib/bookmarks";
 
 /*
  * Viewport-based log viewer.
@@ -33,6 +36,7 @@ const PAGE_SIZE = 256; // rows per /view/rows request
 const OVERSCAN_PAGES = 1; // pages fetched above and below the visible ones
 const MAX_CACHED_PAGES = 64;
 const SEARCH_MIN = 2;
+const EMPTY_PLACES: Map<number, BookmarkPlace> = new Map();
 
 /* ---------------- Types ---------------- */
 type Row = {
@@ -177,6 +181,9 @@ export const LogViewer = ({
   timeRange,
   onTimeRangeChange,
   rangeAction,
+  bookmarks,
+  bookmarksOpen,
+  onBookmarksOpenChange,
 }: {
   baseUrl: string;
   sessionId: string;
@@ -212,6 +219,11 @@ export const LogViewer = ({
   onTimeRangeChange: (r: TimeRange | null) => void;
   /** Shown on the minimap's time scale while a time range is set */
   rangeAction?: React.ReactNode;
+  /** The file's bookmarks (Ctrl+B marks, F2 / Shift+F2 go to them) */
+  bookmarks: BookmarksApi;
+  /** The floating Bookmarks panel */
+  bookmarksOpen: boolean;
+  onBookmarksOpenChange: (open: boolean) => void;
 }) => {
   // level colours come from the theme's palette: render again when it changes
   useTheme();
@@ -598,6 +610,93 @@ export const LogViewer = ({
       .catch(() => { });
   };
 
+  /* ---------------- Bookmarks ----------------
+     They stay on their file lines whatever the filter. Where each one is in this view
+     (its row, or hidden) comes from the backend, again whenever the view or the marked
+     lines change; until it has come, the places of the previous view are not used. */
+  const [placesOf, setPlacesOf] = useState<{ key: string; map: Map<number, BookmarkPlace> }>({ key: "", map: new Map() });
+  const places = placesOf.key === viewParams ? placesOf.map : EMPTY_PLACES;
+  const markedLines = bookmarks.list.map((b) => b.line).join(",");
+  useEffect(() => {
+    if (!markedLines || loading || !info) return;
+    const ctrl = new AbortController();
+    fetchLinesAt(baseUrl, viewParams, markedLines.split(",").map(Number), ctrl.signal)
+      .then((ls) => setPlacesOf({ key: viewParams, map: new Map(ls.map((l) => [l.line_number, { row: l.row, nextRow: l.next_row }])) }))
+      .catch((e) => {
+        if (e?.name !== "AbortError") console.error("Bookmark places:", e);
+      });
+    return () => ctrl.abort();
+  }, [baseUrl, viewParams, markedLines, loading, info]);
+
+  // the bookmark gone to last (panel highlight), and a short note in the status bar
+  const [currentMark, setCurrentMark] = useState<number | null>(null);
+  const [markMsg, setMarkMsg] = useState<string | null>(null);
+  useEffect(() => {
+    if (!markMsg) return;
+    const t = setTimeout(() => setMarkMsg(null), 5000);
+    return () => clearTimeout(t);
+  }, [markMsg]);
+
+  const goToBookmark = async (b: Bookmark) => {
+    setCurrentMark(b.line);
+    let place = places.get(b.line);
+    if (!place) {
+      const [l] = await fetchLinesAt(baseUrl, viewParams, [b.line]).catch(() => []);
+      if (!l) {
+        setMarkMsg(`Line ${b.line.toLocaleString()} is past the end of the file`);
+        return;
+      }
+      place = { row: l.row, nextRow: l.next_row };
+    }
+    if (place.row != null) {
+      jumpToRow(place.row);
+      setMarkMsg(null);
+    } else {
+      // hidden by the filter: where it would be, without marking another line as current
+      centerRow(place.nextRow);
+      setHighlightRow(null);
+      viewportRef.current?.focus();
+      setMarkMsg(`Line ${b.line.toLocaleString()} is hidden by the current filter: showing where it would be`);
+    }
+  };
+
+  /** F2 / Shift+F2: the next / previous bookmark shown in this view, after (before) the
+      current line, around the end of the file to the other end. Hidden ones are skipped. */
+  const stepBookmark = (dir: 1 | -1) => {
+    const shown = bookmarks.list.filter((b) => places.get(b.line)?.row != null);
+    if (!shown.length) {
+      setMarkMsg(
+        !bookmarks.list.length
+          ? "No bookmarks yet: Ctrl+B marks the current line"
+          : places.size
+            ? "All bookmarks are hidden by the current filter (they are listed in the Bookmarks panel)"
+            : "Finding the bookmarks in this view…"
+      );
+      return;
+    }
+    const ref = currentLine()?.line ?? 0;
+    const next =
+      dir > 0
+        ? shown.find((b) => b.line > ref) ?? shown[0]
+        : [...shown].reverse().find((b) => b.line < ref) ?? shown[shown.length - 1];
+    const wrapped = dir > 0 ? next.line <= ref : next.line >= ref;
+    goToBookmark(next);
+    if (wrapped && shown.length > 1) setMarkMsg(dir > 0 ? "Back to the first bookmark" : "On to the last bookmark");
+  };
+
+  /** The current line: the one clicked or gone to, while it is on screen; else the top row */
+  const currentLine = () => {
+    const onScreen = highlightRow != null && highlightRow >= Math.floor(top) && highlightRow < Math.floor(top) + visibleRows;
+    const r = getRow(onScreen ? highlightRow! : Math.ceil(top - 0.01));
+    return r ? { line: r.line_number, text: r.text, fields: r.fields, t: r.t, row: r.row } : null;
+  };
+
+  const toggleBookmarkAt = (r: Row) => {
+    bookmarks.toggle({ line: r.line_number, text: r.text, fields: r.fields, t: r.t });
+    setHighlightRow(r.row);
+    setCurrentMark(r.line_number);
+  };
+
   /* ---------------- Keyboard: Ctrl+F search, Ctrl+G go to line ----------------
      The rows are virtualized, so the browser's own find can't see them anyway. */
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -614,6 +713,21 @@ export const LogViewer = ({
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // bookmarks: Ctrl+B marks, Ctrl+Shift+B the panel, F2 / Shift+F2 go to them
+      if (!e.altKey && !e.metaKey && (e.key === "F2" || ((e.key === "b" || e.key === "B") && e.ctrlKey))) {
+        if (isTypingTarget(e.target) || dialogOpen()) return;
+        e.preventDefault();
+        if (e.key === "F2") {
+          if (!e.ctrlKey) stepBookmark(e.shiftKey ? -1 : 1);
+        } else if (e.shiftKey) {
+          onBookmarksOpenChange(!bookmarksOpen);
+        } else {
+          const cur = currentLine();
+          const row = cur && getRow(cur.row);
+          if (row) toggleBookmarkAt(row);
+        }
+        return;
+      }
       if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
       const k = e.key.toLowerCase();
       if (k !== "f" && k !== "g") return;
@@ -750,22 +864,58 @@ export const LogViewer = ({
       cells.push(<span key="text">{marked(row.text, row.marks, -1)}</span>);
     }
 
+    const mark = bookmarks.byLine.get(row.line_number);
     rows.push(
       <div
         key={r}
-        className={`font-mono px-3 whitespace-pre ${row.context ? "opacity-60" : ""} ${r === highlightRow ? "bg-yellow-500/30" : ""}`}
+        className={`group font-mono pr-3 whitespace-pre ${r === highlightRow ? `bg-yellow-500/30 ${mark ? "bookmark-edge" : ""}` : mark ? "bookmark-row" : ""}`}
         style={{ height: ROW_HEIGHT, lineHeight: `${ROW_HEIGHT}px` }}
+        onClick={() => {
+          // a click makes the line current (Ctrl+B marks it), unless text was selected
+          if (!window.getSelection()?.toString()) setHighlightRow(r);
+        }}
       >
-        <span className="inline-block text-right text-log-dim" style={{ minWidth: `${lineDigits}ch` }}>
+        {/* gutter: the bookmark mark; a click marks or unmarks the line */}
+        <span
+          className="inline-flex w-3 cursor-pointer items-center justify-center align-top"
+          style={{ height: ROW_HEIGHT }}
+          onClick={(e) => {
+            e.stopPropagation();
+            toggleBookmarkAt(row);
+          }}
+          title={mark ? (mark.note ? `${mark.note}\n(click to remove the bookmark)` : "Click to remove the bookmark") : "Bookmark this line (Ctrl+B)"}
+        >
+          {mark ? (
+            <BookmarkGlyph stale={mark.stale} className="h-[11px] w-2" />
+          ) : (
+            <BookmarkGlyph className="h-[11px] w-2 opacity-0 group-hover:opacity-25" />
+          )}
+        </span>
+        <span className={`inline-block text-right text-log-dim ${row.context ? "opacity-60" : ""}`} style={{ minWidth: `${lineDigits}ch` }}>
           {row.line_number}
         </span>
-        :{" "}
-        {!deltaShown && deltaEl}
-        {cells}
-        {row.truncated && <span className="text-log-dim italic"> … (line cut for display)</span>}
+        <span className={row.context ? "opacity-60" : undefined}>
+          :{" "}
+          {!deltaShown && deltaEl}
+          {cells}
+          {row.truncated && <span className="text-log-dim italic"> … (line cut for display)</span>}
+        </span>
+        {mark?.note && (
+          <span className="ml-3 rounded-sm px-1.5 font-sans text-[11px] italic text-[var(--bookmark)]" title="Bookmark note">
+            {mark.note}
+          </span>
+        )}
       </div>
     );
   }
+
+  // bookmarks for the minimap and the lanes, hidden ones (filtered out) drawn hollow
+  const marks: OverviewMark[] = bookmarks.list.map((b) => ({
+    line: b.line,
+    t: b.t,
+    fields: b.fields,
+    hidden: places.get(b.line)?.row === null,
+  }));
 
   const parsedGoto = parseGoto();
   const panelStatus = isSearching
@@ -828,6 +978,30 @@ export const LogViewer = ({
             Open Perfetto
           </button>
         )}
+        {markMsg && (
+          <div className="max-w-[40%] truncate text-xs text-muted-foreground" role="status" title={markMsg}>
+            {markMsg}
+          </div>
+        )}
+        {/* a removal from the gutter can be undone here while the panel is closed */}
+        {!bookmarksOpen && bookmarks.notice?.undo && (
+          <div className="flex max-w-[40%] items-center gap-1.5 text-xs text-muted-foreground">
+            <span className="truncate">{bookmarks.notice.text}</span>
+            <button type="button" className="shrink-0 font-medium text-foreground hover:underline" onClick={bookmarks.notice.undo}>
+              Undo
+            </button>
+          </div>
+        )}
+        <button
+          type="button"
+          onClick={() => onBookmarksOpenChange(!bookmarksOpen)}
+          title="Bookmarks (Ctrl+Shift+B) · Ctrl+B marks the current line, F2 / Shift+F2 go to the next / previous"
+          aria-pressed={bookmarksOpen}
+          className={`inline-flex h-6 shrink-0 items-center gap-1 rounded px-1.5 text-xs hover:bg-accent ${bookmarksOpen ? "bg-accent text-foreground" : "text-muted-foreground"}`}
+        >
+          <BookmarkGlyph className="h-[11px] w-2" stale={!bookmarks.list.length} />
+          {bookmarks.list.length ? bookmarks.list.length.toLocaleString() : "Bookmarks"}
+        </button>
         <span className="hidden text-xs text-muted-foreground sm:inline">Export</span>
         <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" disabled={!rowCount} onClick={() => download("txt")}>
           <Download className="size-3.5" />
@@ -871,6 +1045,7 @@ export const LogViewer = ({
           onTimeRangeChange={onTimeRangeChange}
           lanesWindow={lanesField ? lanesWindow : null}
           rangeAction={rangeAction}
+          marks={marks}
         />
       )}
 
@@ -886,6 +1061,7 @@ export const LogViewer = ({
           onJumpToLine={jumpToLine}
           timeRange={timeRange}
           onTimeRangeChange={onTimeRangeChange}
+          marks={marks}
         />
       )}
 
@@ -1018,6 +1194,29 @@ export const LogViewer = ({
               </button>
             ))}
           </div>
+        </FloatingPanel>
+      )}
+
+      {bookmarksOpen && (
+        <FloatingPanel
+          title="Bookmarks"
+          icon={<BookmarkGlyph className="h-3.5 w-2.5" />}
+          onClose={() => onBookmarksOpenChange(false)}
+          storageKey="logviewer.bookmarksPanel"
+          defaultRect={() => ({
+            x: Math.max(16, window.innerWidth - 540),
+            y: 160,
+            w: 520,
+            h: Math.min(440, window.innerHeight - 200),
+          })}
+        >
+          <BookmarksList
+            api={bookmarks}
+            places={places}
+            lanesField={lanesField?.name ?? columns.find((c) => c.name === "thread")?.name ?? null}
+            current={currentMark}
+            onJump={goToBookmark}
+          />
         </FloatingPanel>
       )}
     </div>

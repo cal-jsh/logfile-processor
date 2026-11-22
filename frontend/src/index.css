@@ -282,3 +282,34 @@ mark.mark-search {
 .cut-scale:hover {
   background-color: color-mix(in srgb, var(--range) 12%, transparent);
 }
+
+/* Bookmarks (Bookmarks.tsx): the logo's vermilion, a colour no log level uses, with an edge
+   in the panel colour so a mark stays visible on a red (ERROR) column of the minimap. */
+:root {
+  --bookmark: #e4572e;
+  --bookmark-edge: #fbf8f2;
+  --bookmark-row: rgb(228 87 46 / 0.09);
+}
+.log-dark {
+  --bookmark: #f2714a;
+  --bookmark-edge: #1e1e1e;
+  --bookmark-row: rgb(242 113 74 / 0.12);
+}
+.bookmark-row {
+  background: var(--bookmark-row);
+  box-shadow: inset 2px 0 var(--bookmark);
+}
+/* the current line keeps its highlight, with the bookmark's edge */
+.bookmark-edge {
+  box-shadow: inset 2px 0 var(--bookmark);
+}
+/* a tick above the minimap bar and a pin in a thread lane */
+.bookmark-tick {
+  background: var(--bookmark);
+  outline: 1px solid var(--bookmark-edge);
+}
+.bookmark-tick-hidden {
+  background: var(--bookmark-edge);
+  outline: 1.5px solid var(--bookmark);
+  outline-offset: -1.5px;
+}

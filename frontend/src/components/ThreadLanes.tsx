@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Focus, Maximize2, ZoomIn, ZoomOut } from "lucide-react";
 import { colorMap, NO_LEVEL_COLOR } from "../lib/colorMap";
 import { useTheme } from "../lib/theme";
-import { formatFull, timeTicks, type VisibleRange } from "./Minimap";
+import { formatFull, timeTicks, type OverviewMark, type VisibleRange } from "./Minimap";
 import { RangeShade, rangeCursor, useTimeRangeDrag, type TimeRange } from "./TimeRangeSelect";
 import { IndexingSweep } from "./IndexingSweep";
 import { dialogOpen, isTypingTarget, prefersReducedMotion } from "../lib/keys";
@@ -27,6 +27,8 @@ import { END_W, LABEL_W } from "./plotColumns";
  * Hover shows the time, the thread and the first line of that thread under the pointer;
  * click jumps there. With a filter, all lines stay as a dim background and the matching
  * lines are drawn on top. The box marks the time range on screen.
+ *
+ * Bookmarks are pins in their line's lane at its time (hollow when the filter hides it).
  *
  * Time range filter, as on the minimap: drag on the lanes or their time scale to filter
  * to a range (a click jumps), drag its edges to change it, drag it on the scale to move it.
@@ -157,6 +159,7 @@ export function ThreadLanes({
   timeRange,
   onTimeRangeChange,
   onViewChange,
+  marks,
 }: {
   baseUrl: string;
   sessionId: string;
@@ -171,6 +174,8 @@ export function ThreadLanes({
   onTimeRangeChange: (r: TimeRange | null) => void;
   /** The zoomed time window (null: the whole file), for the minimap's marker */
   onViewChange?: (w: TimeRange | null) => void;
+  /** Bookmarks, drawn as pins in their lanes */
+  marks?: OverviewMark[];
 }) {
   const panelRef = useRef<HTMLDivElement>(null);
   const areaRef = useRef<HTMLDivElement>(null);
@@ -625,6 +630,18 @@ export function ThreadLanes({
     if (l) return `${l.name}: ${l.lines.toLocaleString()} lines`;
     return `${data.other_values.toLocaleString()} quieter ${fieldLabel.toLowerCase()}s together: ${data.other_lines.toLocaleString()} lines`;
   };
+  // bookmarks: their lane (by the line's field value; else "other", if there is one) and x
+  const pins: { lane: number; x: number; hidden: boolean; key: number }[] = [];
+  if (data && hasTime && cssWidth && marks?.length) {
+    const laneOf = new Map(data.lanes.map((l, i) => [l.name, i]));
+    for (const m of marks) {
+      const v = m.fields[field];
+      if (m.t == null || v == null) continue;
+      const lane = laneOf.get(v) ?? (data.other_values > 0 ? data.lanes.length : -1);
+      const x = ((m.t - vf) / (vt - vf)) * cssWidth;
+      if (lane >= 0 && x >= 0 && x <= cssWidth) pins.push({ lane, x, hidden: m.hidden, key: m.line });
+    }
+  }
   const zoomFactor = hasTime && t1 > t0 ? (t1 - t0) / (vt - vf) : 1;
   const atLevel = hover?.at?.level != null ? CODE_LEVEL[hover.at.level] : null;
 
@@ -737,6 +754,14 @@ export function ThreadLanes({
                 style={{ left: box.left, width: box.width }}
               />
             )}
+            {pins.map((p) => (
+              <div
+                key={p.key}
+                className={`pointer-events-none absolute z-[7] w-[3px] -translate-x-1/2 rounded-[1px] ${p.hidden ? "bookmark-tick-hidden" : "bookmark-tick"}`}
+                style={{ left: p.x, top: p.lane * LANE_H + 1, height: LANE_H - 2 }}
+                aria-hidden
+              />
+            ))}
             {hover && (
               <>
                 <div className="pointer-events-none absolute inset-y-0 w-px bg-log-ink/60" style={{ left: hover.x }} />

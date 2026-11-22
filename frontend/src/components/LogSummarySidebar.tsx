@@ -21,6 +21,7 @@ import { canonicalLevel, colorMap, LEVEL_ORDER } from "../lib/colorMap";
 import type { MinimapAxis } from "./Minimap";
 import { cn } from "@/lib/utils";
 import {
+  Bookmark,
   Bug,
   CircleArrowUp,
   FileText,
@@ -56,6 +57,10 @@ interface Props {
   onOpenAnother?: () => void;
   searchOpen: boolean;
   onToggleSearch: () => void;
+  /** The Bookmarks panel, and how many bookmarks the file has */
+  bookmarksOpen: boolean;
+  onToggleBookmarks: () => void;
+  bookmarkCount: number;
   showDelta: boolean;
   setShowDelta: (v: boolean) => void;
   showMinimap: boolean;
@@ -123,6 +128,9 @@ export default function LogSummarySidebar({
   onOpenAnother,
   searchOpen,
   onToggleSearch,
+  bookmarksOpen,
+  onToggleBookmarks,
+  bookmarkCount,
   showDelta,
   setShowDelta,
   showMinimap,
@@ -247,6 +255,17 @@ export default function LogSummarySidebar({
               >
                 <Search />
                 <span>Search &amp; go to line</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+            <SidebarMenuItem>
+              <SidebarMenuButton
+                tooltip="Bookmarks (Ctrl+Shift+B) · Ctrl+B marks a line, F2 goes to the next"
+                isActive={bookmarksOpen}
+                onClick={onToggleBookmarks}
+              >
+                <Bookmark />
+                <span>Bookmarks</span>
+                {bookmarkCount > 0 && <span className="ml-auto text-xs tabular-nums text-muted-foreground">{bookmarkCount.toLocaleString()}</span>}
               </SidebarMenuButton>
             </SidebarMenuItem>
             {onOpenAnother && (
