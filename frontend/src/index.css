@@ -227,6 +227,15 @@ mark.mark-search {
   border-radius: 2px;
 }
 
+/* Words highlighted with the log's right-click menu (lib/highlights.ts), each in its own
+   colour (--hl, set inline): the colour itself as the background, with dark text so it
+   reads on both themes. */
+mark.mark-word {
+  background: var(--hl);
+  color: #1c1917;
+  border-radius: 2px;
+}
+
 /* A regular expression chip in the filter bar: tinted with the logo's vermilion */
 .term-regex {
   background: color-mix(in oklab, var(--update) 16%, var(--secondary));
