@@ -29,6 +29,8 @@ import { END_W, LABEL_W } from "./plotColumns";
  * lines are drawn on top. The box marks the time range on screen.
  *
  * Bookmarks are pins in their line's lane at its time (hollow when the filter hides it).
+ * The selected line of the log is a thin line across all lanes at its time, solid in its
+ * own lane.
  *
  * Time range filter, as on the minimap: drag on the lanes or their time scale to filter
  * to a range (a click jumps), drag its edges to change it, drag it on the scale to move it.
@@ -160,6 +162,7 @@ export function ThreadLanes({
   onTimeRangeChange,
   onViewChange,
   marks,
+  selected,
 }: {
   baseUrl: string;
   sessionId: string;
@@ -176,6 +179,8 @@ export function ThreadLanes({
   onViewChange?: (w: TimeRange | null) => void;
   /** Bookmarks, drawn as pins in their lanes */
   marks?: OverviewMark[];
+  /** The selected line (clicked or gone to): a line across the lanes, solid in its own lane */
+  selected?: OverviewMark | null;
 }) {
   const panelRef = useRef<HTMLDivElement>(null);
   const areaRef = useRef<HTMLDivElement>(null);
@@ -642,6 +647,15 @@ export function ThreadLanes({
       if (lane >= 0 && x >= 0 && x <= cssWidth) pins.push({ lane, x, hidden: m.hidden, key: m.line });
     }
   }
+  // the selected line: x, and its lane (-1: none, e.g. a line without the field)
+  let sel: { x: number; lane: number } | null = null;
+  if (data && hasTime && cssWidth && selected?.t != null) {
+    const x = ((selected.t - vf) / (vt - vf)) * cssWidth;
+    const v = selected.fields[field];
+    const laneOf = data.lanes.findIndex((l) => l.name === v);
+    const lane = v == null ? -1 : laneOf >= 0 ? laneOf : data.other_values > 0 ? data.lanes.length : -1;
+    if (x >= 0 && x <= cssWidth) sel = { x, lane };
+  }
   const zoomFactor = hasTime && t1 > t0 ? (t1 - t0) / (vt - vf) : 1;
   const atLevel = hover?.at?.level != null ? CODE_LEVEL[hover.at.level] : null;
 
@@ -762,6 +776,14 @@ export function ThreadLanes({
                 aria-hidden
               />
             ))}
+            {sel && (
+              <>
+                <div className="selected-line-thin pointer-events-none absolute top-0 z-[8] -translate-x-1/2" style={{ left: sel.x, height: laneCount * LANE_H }} aria-hidden />
+                {sel.lane >= 0 && (
+                  <div className="selected-line pointer-events-none absolute z-[8] -translate-x-1/2" style={{ left: sel.x, top: sel.lane * LANE_H, height: LANE_H }} aria-hidden />
+                )}
+              </>
+            )}
             {hover && (
               <>
                 <div className="pointer-events-none absolute inset-y-0 w-px bg-log-ink/60" style={{ left: hover.x }} />

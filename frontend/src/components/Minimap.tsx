@@ -28,7 +28,8 @@ import { END_W, LABEL_W } from "./plotColumns";
  * backend gives the 12 largest groups a code each and folds the rest into "other". A
  * legend below the bar names the colours.
  *
- * Bookmarks are ticks across the bar (hollow when the filter hides their line).
+ * Bookmarks are ticks across the bar (hollow when the filter hides their line). The
+ * selected line of the log (clicked or gone to) is a line across the bar.
  *
  * Zoomed thread lanes: their time window is marked on the time axis (a dashed box on the
  * bar, a bracket on the scale), so the lanes' place in the file stays visible.
@@ -194,6 +195,7 @@ export function Minimap({
   lanesWindow,
   rangeAction,
   marks,
+  selected,
 }: {
   baseUrl: string;
   sessionId: string;
@@ -213,6 +215,8 @@ export function Minimap({
   rangeAction?: React.ReactNode;
   /** Bookmarks, drawn as ticks */
   marks?: OverviewMark[];
+  /** The selected line (clicked or gone to), drawn as a line across the bar */
+  selected?: OverviewMark | null;
 }) {
   const barRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -434,6 +438,13 @@ export function Minimap({
     }
   }
 
+  // the selected line: x in css px, like a bookmark
+  let selX: number | null = null;
+  if (data && cssWidth && selected) {
+    const f = timeAxis ? (selected.t != null && t1 > t0 ? (selected.t - t0) / (t1 - t0) : null) : lineCount ? (selected.line - 0.5) / lineCount : null;
+    if (f != null && f >= 0 && f <= 1) selX = f * cssWidth;
+  }
+
   return (
     <div className="shrink-0 select-none border-b border-log-ink/10 bg-log-panel">
       {/* time scale */}
@@ -541,6 +552,10 @@ export function Minimap({
               aria-hidden
             />
           ))}
+
+          {selX != null && (
+            <div className="selected-line pointer-events-none absolute inset-y-0 z-[8] -translate-x-1/2" style={{ left: selX }} aria-hidden />
+          )}
 
           {hover && (
             <>

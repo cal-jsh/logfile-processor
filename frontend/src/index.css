@@ -313,3 +313,24 @@ mark.mark-search {
   outline: 1.5px solid var(--bookmark);
   outline-offset: -1.5px;
 }
+
+/* The selected line of the log (LogViewer's highlighted row) on the minimap and the thread
+   lanes: the row highlight's yellow, edged in the panel colour so it shows on any level.
+   A thin line crosses all lanes; the full one marks the bar and the line's own lane. */
+:root {
+  --selected-line: #d4a106;
+  --selected-edge: #fbf8f2;
+}
+.log-dark {
+  --selected-line: #facc15;
+  --selected-edge: #1e1e1e;
+}
+.selected-line {
+  width: 3px;
+  background: var(--selected-line);
+  box-shadow: 0 0 0 1px var(--selected-edge);
+}
+.selected-line-thin {
+  width: 1px;
+  background: color-mix(in srgb, var(--selected-line) 70%, transparent);
+}
