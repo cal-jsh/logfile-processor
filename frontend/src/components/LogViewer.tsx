@@ -1032,6 +1032,20 @@ export const LogViewer = ({
     hidden: places.get(b.line)?.row === null,
   }));
 
+  // the selected line (clicked or gone to) for the minimap and the lanes; kept while its
+  // row is out of the row cache, since highlightRow only changes on a new selection
+  const selectedRef = useRef<{ row: number; mark: OverviewMark } | null>(null);
+  if (highlightRow == null) selectedRef.current = null;
+  else if (selectedRef.current?.row !== highlightRow) {
+    const r = getRow(highlightRow);
+    const fields: Record<string, string> = {};
+    if (r?.fields) columns.forEach((c, i) => {
+      if (c.kind === "text" && r.fields![i] != null) fields[c.name] = r.fields![i];
+    });
+    selectedRef.current = r ? { row: highlightRow, mark: { line: r.line_number, t: r.t, fields, hidden: false } } : null;
+  }
+  const selectedMark = selectedRef.current?.mark ?? null;
+
   const parsedGoto = parseGoto();
   const panelStatus = isSearching
     ? "Searching…"
@@ -1174,6 +1188,7 @@ export const LogViewer = ({
           lanesWindow={lanesField ? lanesWindow : null}
           rangeAction={rangeAction}
           marks={marks}
+          selected={selectedMark}
         />
       )}
 
@@ -1190,6 +1205,7 @@ export const LogViewer = ({
           timeRange={timeRange}
           onTimeRangeChange={onTimeRangeChange}
           marks={marks}
+          selected={selectedMark}
         />
       )}
 
