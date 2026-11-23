@@ -191,8 +191,18 @@ export default function LogSummarySidebar({
         setSettingsOpen(true);
       }
     };
+    // other parts of the window open a page (the log's right-click menu: highlights)
+    const onOpen = (e: Event) => {
+      const page = (e as CustomEvent<SettingsPage>).detail;
+      if (page) setSettingsPage(page);
+      setSettingsOpen(true);
+    };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("logviewer:open-settings", onOpen);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("logviewer:open-settings", onOpen);
+    };
   }, []);
   const [cliHelpOpen, setCliHelpOpen] = useState(false);
   const [updateOpen, setUpdateOpen] = useState(false);

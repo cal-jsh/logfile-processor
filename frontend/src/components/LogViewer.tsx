@@ -19,6 +19,8 @@ import { useTheme } from "../lib/theme";
 import { dialogOpen, isTypingTarget } from "../lib/keys";
 import { BookmarkGlyph, BookmarksList, fetchLinesAt, type BookmarkPlace, type BookmarksApi } from "./Bookmarks";
 import type { Bookmark } from "../lib/bookmarks";
+import { HIGHLIGHT_COLORS, matcherFor, useHighlights, type Matcher } from "../lib/highlights";
+import { HighlightMenu, targetAt, type HighlightTarget } from "./HighlightMenu";
 
 /*
  * Viewport-based log viewer.
@@ -89,34 +91,50 @@ function formatDelta(ms: number): string {
   else return `${(ms / 1000).toFixed(2)} s`;
 }
 
-/** `text` (field `field` of a row) with its marks wrapped in <mark>. Where a search
-    match and a filter match overlap, the search wins. */
-function marked(text: string, marks: Mark[] | undefined, field: number): React.ReactNode {
+/** `text` (field `field` of a row) with its marks wrapped in <mark>, and the words the
+    user highlighted (right-click) in their colours. Where marks overlap, the search wins
+    over a highlighted word, which wins over the filter. */
+function marked(text: string, marks: Mark[] | undefined, field: number, hl: Matcher | null): React.ReactNode {
   const mine = marks?.filter((m) => m[0] === field);
-  if (!mine?.length) return text;
+  const words = hl?.(text);
+  if (!mine?.length && !words?.length) return text;
+  // -1 nothing, 0 filter, 1 search, 2 + n highlight colour n
   const kind = new Int8Array(text.length).fill(-1);
-  for (const k of [0, 1]) for (const m of mine) if (m[3] === k) kind.fill(k, m[1], Math.min(m[2], text.length));
+  if (mine) for (const m of mine) if (m[3] === 0) kind.fill(0, m[1], Math.min(m[2], text.length));
+  if (words) for (const w of words) kind.fill(2 + w.color, w.start, w.end);
+  if (mine) for (const m of mine) if (m[3] === 1) kind.fill(1, m[1], Math.min(m[2], text.length));
   const out: React.ReactNode[] = [];
   for (let i = 0; i < text.length; ) {
     let j = i + 1;
     while (j < text.length && kind[j] === kind[i]) j++;
     const piece = text.slice(i, j);
-    out.push(kind[i] < 0 ? piece : <mark key={i} className={MARK_CLASS[kind[i]]}>{piece}</mark>);
+    const k = kind[i];
+    out.push(
+      k < 0 ? (
+        piece
+      ) : k < 2 ? (
+        <mark key={i} className={MARK_CLASS[k]}>{piece}</mark>
+      ) : (
+        <mark key={i} className="mark-word" style={{ "--hl": HIGHLIGHT_COLORS[k - 2].color } as React.CSSProperties}>
+          {piece}
+        </mark>
+      )
+    );
     i = j;
   }
   return out;
 }
 
 /** A search hit, compact: time, level, other fields and the message, with the match marked */
-function ResultText({ hit, columns }: { hit: SearchHit; columns: FieldDef[] }) {
+function ResultText({ hit, columns, hl }: { hit: SearchHit; columns: FieldDef[]; hl: Matcher | null }) {
   const { text, fields, marks } = hit;
   if (!fields) {
     // not in the log format: start shortly before the match so it stays visible
     const at = marks.find((m) => m[0] === -1)?.[1] ?? 0;
     const cut = at > 40 ? at - 20 : 0;
-    if (!cut) return <span className="truncate">{marked(text, marks, -1)}</span>;
+    if (!cut) return <span className="truncate">{marked(text, marks, -1, hl)}</span>;
     const shifted = marks.map((m): Mark => [m[0], m[1] - cut + 1, m[2] - cut + 1, m[3]]).filter((m) => m[2] > 1);
-    return <span className="truncate">{marked("…" + text.slice(cut), shifted, -1)}</span>;
+    return <span className="truncate">{marked("…" + text.slice(cut), shifted, -1, hl)}</span>;
   }
   const of = (kind: FieldDef["kind"]) => {
     const i = columns.findIndex((c) => c.kind === kind);
@@ -137,9 +155,9 @@ function ResultText({ hit, columns }: { hit: SearchHit; columns: FieldDef[] }) {
       )}
       <span className="truncate">
         {others.map((i) => (
-          <span key={i} className="text-muted-foreground">{marked(fields[i], marks, i)} </span>
+          <span key={i} className="text-muted-foreground">{marked(fields[i], marks, i, hl)} </span>
         ))}
-        {messageAt >= 0 ? marked(fields[messageAt], marks, messageAt) : text}
+        {messageAt >= 0 ? marked(fields[messageAt], marks, messageAt, hl) : text}
       </span>
     </span>
   );
@@ -238,6 +256,10 @@ export const LogViewer = ({
   const [top, setTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(600);
   const [highlightRow, setHighlightRow] = useState<number | null>(null);
+  // words highlighted with the right-click menu, matched in the rows shown
+  const hl = matcherFor(useHighlights());
+  const [menu, setMenu] = useState<HighlightTarget | null>(null);
+  const closeMenu = useCallback(() => setMenu(null), []);
 
   const pagesRef = useRef<Map<number, Row[]>>(new Map());
   // rows of the same view with the previous search marks, shown until they are refetched
@@ -955,7 +977,7 @@ export const LogViewer = ({
       columns.forEach((c, i) => {
         const v = row.fields![i] ?? "";
         if (c.kind === "message") {
-          cells.push(<span key={i}>{marked(v, row.marks, i)}</span>);
+          cells.push(<span key={i}>{marked(v, row.marks, i, hl)}</span>);
           return;
         }
         if (hiddenColumns.includes(c.name)) return;
@@ -967,7 +989,7 @@ export const LogViewer = ({
         }
         cells.push(
           <span key={i} className={c.kind === "text" ? FIELD_COLORS[c.name] ?? "text-log-field" : undefined} style={style}>
-            [{marked(v, row.marks, i)}]{" "}
+            [{marked(v, row.marks, i, hl)}]{" "}
           </span>
         );
         if (c.kind === "time" && deltaEl) {
@@ -976,7 +998,7 @@ export const LogViewer = ({
         }
       });
     } else {
-      cells.push(<span key="text">{marked(row.text, row.marks, -1)}</span>);
+      cells.push(<span key="text">{marked(row.text, row.marks, -1, hl)}</span>);
     }
 
     const mark = bookmarks.byLine.get(row.line_number);
@@ -1009,7 +1031,7 @@ export const LogViewer = ({
         <span className={`inline-block text-right text-log-dim ${row.context ? "opacity-60" : ""}`} style={{ minWidth: `${lineDigits}ch` }}>
           {row.line_number}
         </span>
-        <span className={row.context ? "opacity-60" : undefined}>
+        <span className={row.context ? "opacity-60" : undefined} data-row-text>
           :{" "}
           {!deltaShown && deltaEl}
           {cells}
@@ -1214,6 +1236,10 @@ export const LogViewer = ({
           ref={viewportRef}
           tabIndex={0}
           onKeyDown={onKeyDown}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            setMenu(targetAt(e.clientX, e.clientY, e.currentTarget));
+          }}
           className="flex-1 min-w-0 overflow-x-auto overflow-y-hidden outline-none text-sm"
         >
           <div style={{ transform: `translateY(${-offsetPx}px)`, minWidth: "max-content" }}>{rows}</div>
@@ -1236,6 +1262,15 @@ export const LogViewer = ({
           )}
         </div>
       </div>
+
+      {/* Right-click: highlight a word everywhere */}
+      {menu && (
+        <HighlightMenu
+          target={menu}
+          onClose={closeMenu}
+          onOpenSettings={() => window.dispatchEvent(new CustomEvent("logviewer:open-settings", { detail: "highlights" }))}
+        />
+      )}
 
       {/* Search & go to line: floating panel */}
       {searchOpen && (
@@ -1334,7 +1369,7 @@ export const LogViewer = ({
                 title={r.text}
               >
                 <span className="w-14 shrink-0 text-right tabular-nums text-muted-foreground">{r.line_number}</span>
-                <ResultText hit={r} columns={columns} />
+                <ResultText hit={r} columns={columns} hl={hl} />
               </button>
             ))}
           </div>

@@ -1,10 +1,12 @@
-import { Check, Palette, SlidersHorizontal } from "lucide-react";
+import { Check, Highlighter, Palette, SlidersHorizontal } from "lucide-react";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "./ui/dialog";
 import FormatSettings, { type FormatPageProps } from "./FormatSettings";
+import HighlightSettings from "./HighlightSettings";
+import { useHighlights } from "../lib/highlights";
 import { setThemeChoice, useTheme, useThemeChoice, type ThemeChoice } from "../lib/theme";
 import { cn } from "@/lib/utils";
 
-export type SettingsPage = "appearance" | "format";
+export type SettingsPage = "appearance" | "format" | "highlights";
 
 interface Props {
   open: boolean;
@@ -26,6 +28,7 @@ export function formatNeedsAttention(f: FormatPageProps["format"]): boolean {
     sidebar keeps only what changes the current view. */
 export default function SettingsDialog({ open, onOpenChange, page, onPageChange, format }: Props) {
   const f = format.format;
+  const highlighted = useHighlights().words.length;
   const pages: { id: SettingsPage; label: string; hint: string; icon: React.ReactNode; warn?: boolean }[] = [
     {
       id: "format",
@@ -33,6 +36,12 @@ export default function SettingsDialog({ open, onOpenChange, page, onPageChange,
       hint: f.raw ? "No format found" : f.detected ? "Detected for this file" : "Set by you for this file",
       icon: <SlidersHorizontal />,
       warn: formatNeedsAttention(f),
+    },
+    {
+      id: "highlights",
+      label: "Highlights",
+      hint: highlighted ? `${highlighted} word${highlighted === 1 ? "" : "s"} highlighted` : "Right-click a word in the log",
+      icon: <Highlighter />,
     },
     { id: "appearance", label: "Appearance", hint: "Theme", icon: <Palette /> },
   ];
@@ -74,6 +83,8 @@ export default function SettingsDialog({ open, onOpenChange, page, onPageChange,
         <div className="min-w-0 flex-1 overflow-auto p-6 pr-12">
           {page === "appearance" ? (
             <AppearancePage />
+          ) : page === "highlights" ? (
+            <HighlightSettings />
           ) : (
             <FormatSettings {...format} active={open && page === "format"} onDone={() => onOpenChange(false)} />
           )}
