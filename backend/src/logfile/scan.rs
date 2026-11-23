@@ -7,6 +7,7 @@ use crate::model::log_summary::{FieldValues, FormatInfo, LogSummary};
 use crate::parsing::format::{FieldKind, LogFormat, Parsed};
 use crate::parsing::line_filter::LineFilter;
 use crate::parsing::text_match::TextMatcher;
+use crate::parsing::value_pattern::ValuePattern;
 use memchr::memmem;
 use rayon::prelude::*;
 use std::borrow::Cow;
@@ -37,7 +38,7 @@ fn as_text(line: &[u8]) -> Cow<'_, str> {
 pub struct CompiledFilter {
     format: Arc<LogFormat>,
     /// `(field index, accepted values)`; the level is one of them
-    criteria: Vec<(usize, Vec<String>)>,
+    criteria: Vec<(usize, Vec<ValuePattern>)>,
     /// Keywords and regular expressions the message must match (any of them)
     text: Option<TextMatcher>,
     /// A criterion names a field the format does not have (or a regular expression
@@ -99,7 +100,13 @@ impl CompiledFilter {
         for (field, values) in wanted {
             match field {
                 Some(f) => {
-                    prechecks.push(finders(&values, format.affixes(f)));
+                    let values: Vec<ValuePattern> = values.iter().map(|v| ValuePattern::new(v)).collect();
+                    // a line can only match if it holds one of the values' needles; a
+                    // pattern without one (`*`) can match any line: no pre-check then
+                    let needles: Option<Vec<String>> = values.iter().map(|v| v.needle(format.affixes(f))).collect();
+                    if let Some(needles) = needles {
+                        prechecks.push(finders(&needles, (None, None)));
+                    }
                     criteria.push((f, values));
                 }
                 None => impossible = true,
@@ -147,7 +154,7 @@ impl CompiledFilter {
         };
         for (f, values) in &self.criteria {
             let v = p.get(&text, *f);
-            if !values.iter().any(|s| s == v) {
+            if !values.iter().any(|s| s.is_match(v)) {
                 return false;
             }
         }
@@ -550,6 +557,11 @@ mod tests {
                 (Some("ERROR,WARN"), Some("net"), None),
                 (None, None, None),
                 (Some("INFO"), None, Some("BOOM,fine")),
+                // domain patterns: prefix, suffix, subtree (with its parent), any
+                (None, Some("n*"), None),
+                (Some("ERROR"), Some("*e,ui"), None),
+                (None, Some("ui.*"), Some("BOOM")),
+                (None, Some("*"), None),
             ] {
                 let filter = LineFilter::from_csv(lv, dm, kw);
                 let expected: Vec<u64> = text
@@ -902,6 +914,9 @@ mod bench {
             ("level ERROR", Some("ERROR"), None, None),
             ("level error", Some("error"), None, None),
             ("level+domain", Some("ERROR,WARN"), Some("network"), None),
+            ("domain exact", None, Some("net.tcp"), None),
+            ("domain net.*", None, Some("net.*"), None),
+            ("domain *.tcp", None, Some("*.tcp"), None),
             ("no filter", None, None, None),
         ] {
             let t = Instant::now();

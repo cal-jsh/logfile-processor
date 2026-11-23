@@ -76,6 +76,25 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
     const [selectedLevels, setSelectedLevels] = useState<string[]>([]);
     // values per filterable field (domain, thread, ...): none selected = all
     const [selectedFields, setSelectedFields] = useState<Record<string, string[]>>({});
+    // patterns added per field (`ui.*`), listed in its filter whether checked or not;
+    // remembered for all files
+    const [fieldPatterns, setFieldPatternsState] = useState<Record<string, string[]>>(() => {
+        try {
+            return JSON.parse(localStorage.getItem("logviewer.fieldPatterns") ?? "{}") ?? {};
+        } catch {
+            return {};
+        }
+    });
+    const setFieldPatterns = (field: string, patterns: string[]) =>
+        setFieldPatternsState((s) => {
+            const next = { ...s, [field]: patterns };
+            try {
+                localStorage.setItem("logviewer.fieldPatterns", JSON.stringify(next));
+            } catch {
+                /* not stored */
+            }
+            return next;
+        });
     // keywords and regular expressions; a line matches if its message has any of them
     const [selectedTerms, setSelectedTerms] = useState<SearchTerm[]>([]);
     const [newKeyword, setNewKeyword] = useState<string>("");
@@ -434,6 +453,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ sessionId, baseUrl, summar
                                         options={f.values}
                                         selected={selectedFields[f.name] ?? []}
                                         onChange={(v) => setSelectedFields((s) => ({ ...s, [f.name]: v }))}
+                                        patterns={fieldPatterns[f.name] ?? []}
+                                        onPatternsChange={(v) => setFieldPatterns(f.name, v)}
                                         label={plural(f.label)}
                                         icon={FIELD_ICONS[f.name] ?? <ListFilter className="size-3.5" />}
                                         triggerClassName="h-7 w-auto gap-1 rounded-full px-3 text-xs font-medium"

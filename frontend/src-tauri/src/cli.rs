@@ -248,8 +248,11 @@ Filters (a line must pass every kind given, and match any one value of each):
   -l, --level LEVEL,...      Log level, e.g. error,critical (any case; warn and
                              warning are the same)
   -d, --domain NAME,...      Domain (logger name, %n in the pattern), exact value,
-                             e.g. net.http
+                             e.g. net.http, or a pattern with * for any text:
+                             'ui.*' is ui and every domain below it, '*.http'
+                             ends in .http (quote it in a Unix shell)
   -f, --field NAME=VALUE,... Any other field of the line format, e.g. thread=12
+                             (VALUE may be a * pattern like -d)
   -C, --context N            Also write N lines before and after each match
 
 Output:
