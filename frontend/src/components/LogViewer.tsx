@@ -3,7 +3,8 @@ import { Input } from "./ui/input";
 import { Button } from "./ui/button";
 import { levelColor } from "../lib/colorMap";
 import { Spinner } from "./ui/spinner";
-import { Download, LocateFixed, Search } from "lucide-react";
+import { createPortal } from "react-dom";
+import { Download, LocateFixed, Move, Search } from "lucide-react";
 import { exportView, PERFETTO_MAX_EVENTS, type ExportFormat, type ExportResult } from "../lib/platform";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { FloatingPanel } from "./FloatingPanel";
@@ -437,6 +438,120 @@ export const LogViewer = ({
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
   }, [maxTop, visibleRows]);
+
+  /* ---------------- Middle-button autoscroll (both axes) ---------------- */
+  // The webview's own autoscroll only reaches the native (horizontal) scroller, as the rows
+  // are virtual. So this runs its own, in both directions, with Chromium's speed curve:
+  // hold and drag, or click and move the mouse (then any click or Esc ends it).
+  const maxTopRef = useRef(maxTop);
+  maxTopRef.current = maxTop;
+  const [autoscrollAt, setAutoscrollAt] = useState<{ x: number; y: number } | null>(null);
+  const autoscrollOverlayRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = viewportRef.current;
+    if (!el) return;
+    const DEAD = 15; // px around the origin that don't scroll
+    // px/s: Chromium's |d|^2.2 curve, scaled to what the webview's own autoscroll measured
+    // (about 130 px/s at 60 px from the origin, 600 at 120, 1900 at 200)
+    const speed = (d: number) => (Math.abs(d) <= DEAD ? 0 : Math.sign(d) * 0.0163 * Math.abs(d) ** 2.2);
+    const CURSORS = ["e-resize", "se-resize", "s-resize", "sw-resize", "w-resize", "nw-resize", "n-resize", "ne-resize"];
+    let s: {
+      x0: number; y0: number; x: number; y: number;
+      left: number; moved: boolean; sticky: boolean; raf: number; last: number;
+    } | null = null;
+    let swallowClick = false;
+
+    const tick = (now: number) => {
+      if (!s) return;
+      const dt = Math.min(0.05, (now - s.last) / 1000);
+      s.last = now;
+      const vx = speed(s.x - s.x0);
+      const vy = speed(s.y - s.y0);
+      if (vx) {
+        // keep the fraction ourselves; scrollLeft rounds, which would stall slow scrolls
+        s.left = clamp(s.left + vx * dt, 0, Math.max(0, el.scrollWidth - el.clientWidth));
+        el.scrollLeft = s.left;
+      }
+      if (vy) setTop((t) => clamp(t + (vy * dt) / ROW_HEIGHT, 0, maxTopRef.current));
+      s.raf = requestAnimationFrame(tick);
+    };
+    const onMove = (e: MouseEvent) => {
+      if (!s) return;
+      s.x = e.clientX;
+      s.y = e.clientY;
+      const dx = s.x - s.x0;
+      const dy = s.y - s.y0;
+      const outside = Math.abs(dx) > DEAD || Math.abs(dy) > DEAD;
+      if (outside) s.moved = true;
+      const o = autoscrollOverlayRef.current;
+      if (o) {
+        const octant = Math.round(Math.atan2(dy, dx) / (Math.PI / 4));
+        o.style.cursor = outside ? CURSORS[(octant + 8) % 8] : "all-scroll";
+      }
+    };
+    const stop = () => {
+      if (!s) return;
+      cancelAnimationFrame(s.raf);
+      s = null;
+      setAutoscrollAt(null);
+      window.removeEventListener("mousemove", onMove, true);
+      window.removeEventListener("mouseup", onUp, true);
+      window.removeEventListener("mousedown", onAnyDown, true);
+      window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("blur", stop);
+    };
+    const onUp = (e: MouseEvent) => {
+      if (!s || e.button !== 1) return;
+      if (s.moved) stop(); // hold-and-drag ends on release
+      else s.sticky = true; // a plain click keeps it going until the next click
+    };
+    const onAnyDown = (e: MouseEvent) => {
+      if (!s?.sticky) return;
+      // this click only ends the autoscroll; don't let it select or jump
+      e.preventDefault();
+      e.stopPropagation();
+      swallowClick = true;
+      setTimeout(() => (swallowClick = false), 500);
+      stop();
+    };
+    const onClick = (e: MouseEvent) => {
+      if (!swallowClick) return;
+      swallowClick = false;
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      stop();
+    };
+    const onDown = (e: MouseEvent) => {
+      if (e.button !== 1 || s) return;
+      e.preventDefault(); // no native autoscroll (it would fight this one horizontally)
+      el.focus({ preventScroll: true });
+      s = {
+        x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY,
+        left: el.scrollLeft, moved: false, sticky: false, raf: 0, last: performance.now(),
+      };
+      s.raf = requestAnimationFrame(tick);
+      setAutoscrollAt({ x: e.clientX, y: e.clientY });
+      window.addEventListener("mousemove", onMove, true);
+      window.addEventListener("mouseup", onUp, true);
+      window.addEventListener("mousedown", onAnyDown, true);
+      window.addEventListener("keydown", onKey, true);
+      window.addEventListener("blur", stop);
+    };
+    el.addEventListener("mousedown", onDown);
+    window.addEventListener("click", onClick, true);
+    window.addEventListener("auxclick", onClick, true);
+    return () => {
+      stop();
+      el.removeEventListener("mousedown", onDown);
+      window.removeEventListener("click", onClick, true);
+      window.removeEventListener("auxclick", onClick, true);
+    };
+  }, []);
 
   const onKeyDown = (e: React.KeyboardEvent) => {
     // Ctrl+arrows show and hide the panels (handled by the dashboard)
@@ -934,6 +1049,19 @@ export const LogViewer = ({
 
   return (
     <div className="relative flex h-full min-h-0 w-full flex-col overflow-hidden rounded-lg border">
+      {autoscrollAt &&
+        createPortal(
+          // catches the mouse while autoscrolling (cursor, and the click that ends it)
+          <div ref={autoscrollOverlayRef} className="fixed inset-0 z-[100]" style={{ cursor: "all-scroll" }}>
+            <div
+              className="pointer-events-none absolute flex size-7 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border border-log-ink/30 bg-log/90 text-log-fg shadow-md"
+              style={{ left: autoscrollAt.x, top: autoscrollAt.y }}
+            >
+              <Move className="size-4" />
+            </div>
+          </div>,
+          document.body
+        )}
       {loading && (
         <div className="absolute inset-0 bg-log/50 flex items-center justify-center z-30">
           <Spinner className="w-8 h-8 text-log-fg" />

@@ -54,6 +54,7 @@ Both remember whether you left them open.
 | W / S | Zoom the thread lanes in / out at the pointer (hold for a smooth zoom; also Ctrl+wheel) |
 | A / D | Pan the zoomed thread lanes left / right (hold to keep going; also Shift+wheel or Shift+drag) |
 | Ctrl+, | Settings (theme, log format) |
+| Middle button | Autoscroll the log up, down and sideways: hold and drag, or click and move (a click or Esc stops) |
 
 W/A/S/D act while the pointer is over the thread lanes, as in Perfetto. With
 "reduce motion" set in the system they move one step per key press instead.
