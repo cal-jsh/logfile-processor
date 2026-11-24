@@ -1,6 +1,7 @@
 // local
 use crate::parsing::format::LogFormat;
 use crate::parsing::text_match::TextMatcher;
+use crate::parsing::value_pattern::ValuePattern;
 // std
 use std::collections::{BTreeMap, VecDeque};
 
@@ -10,7 +11,8 @@ use std::collections::{BTreeMap, VecDeque};
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LineFilter {
     pub levels: Option<Vec<String>>,
-    /// Other fields by name (`domain`, `thread`, ...): the line's value must be one of these
+    /// Other fields by name (`domain`, `thread`, ...): the line's value must be one of these.
+    /// A value with `*` is a pattern (see [`ValuePattern`]): `ui.*` is `ui` and all below it
     pub fields: BTreeMap<String, Vec<String>>,
     pub keywords: Option<Vec<String>>,
     /// Regular expressions (Rust `regex` syntax, case-sensitive unless `(?i)`). The
@@ -122,7 +124,7 @@ impl LineFilter {
         let fields_ok = self
             .fields
             .iter()
-            .all(|(name, values)| field(name).is_some_and(|f| values.iter().any(|s| s == f)));
+            .all(|(name, values)| field(name).is_some_and(|f| values.iter().any(|s| ValuePattern::new(s).is_match(f))));
         let message = fmt.message_field().map_or(line, |m| p.get(line, m));
         // (compiled per call: this is the slow reference, the scan compiles once)
         let keyword_ok = match self.text_matcher() {
@@ -315,6 +317,17 @@ mod tests {
         assert!(f.matches(&fmt, "[t] [ERROR] [Net] x"));
         assert!(!f.matches(&fmt, "[t] [INFO] [Net] x"));
         assert!(!f.matches(&fmt, "[t] [ERROR] [Core] x"));
+    }
+
+    #[test]
+    fn domain_patterns() {
+        let fmt = legacy();
+        let f = LineFilter::from_csv(None, Some("ui.*, net.http"), None);
+        assert!(f.matches(&fmt, "[t] [INFO] [ui] x"));
+        assert!(f.matches(&fmt, "[t] [INFO] [ui.peripheral.usb] x"));
+        assert!(f.matches(&fmt, "[t] [INFO] [net.http] x"));
+        assert!(!f.matches(&fmt, "[t] [INFO] [net.tcp] x"));
+        assert!(!f.matches(&fmt, "[t] [INFO] [uix] x"));
     }
 
     #[test]
